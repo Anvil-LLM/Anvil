@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>anvil — Forge anything. Local LLMs in your terminal.</title>
-<meta name="description" content="anvil is a terminal-native LLM client on the TurboQuant llama.cpp fork. 4.2x KV compression, ~1% quality loss, MTP+NextN speculative decoding, zero cloud.">
+<title>Anvil — Forge anything.</title>
+<meta name="description" content="Anvil is a terminal-native LLM client on the TurboQuant llama.cpp fork. 4.2x KV compression, ~1% quality loss, MTP+NextN speculative decoding, zero cloud.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -22,8 +22,6 @@
 html{scroll-behavior:smooth}
 body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:15px;line-height:1.6;overflow-x:hidden}
 ::selection{background:var(--hot);color:#0c0a07}
-
-/* ── ambient layers ── */
 .bg-grid{position:fixed;inset:0;z-index:0;pointer-events:none;
   background-image:linear-gradient(rgba(255,157,46,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,157,46,.035) 1px,transparent 1px);
   background-size:56px 56px;
@@ -37,8 +35,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:15
   background:radial-gradient(ellipse 120% 90% at 50% 40%,transparent 60%,rgba(0,0,0,.5) 100%)}
 main,nav,footer{position:relative;z-index:2}
 #progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--hot),var(--amber));z-index:100;box-shadow:0 0 12px rgba(255,157,46,.7)}
-
-/* ── nav ── */
 nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;gap:26px;
   padding:14px 32px;background:rgba(12,10,7,.9);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
 .brand{font-family:var(--disp);font-weight:900;font-size:17px;color:var(--text);text-decoration:none}
@@ -53,8 +49,6 @@ nav .right{margin-left:auto;display:flex;align-items:center;gap:14px}
 .gh-btn{font-family:var(--mono);font-size:13px;font-weight:700;text-decoration:none;color:#0c0a07;background:var(--amber);
   padding:7px 16px;border-radius:6px;transition:background .2s,transform .15s,box-shadow .2s}
 .gh-btn:hover{background:var(--pale);transform:translateY(-1px);box-shadow:0 6px 20px -6px rgba(255,157,46,.6)}
-
-/* ── hero ── */
 .hero{max-width:1240px;margin:0 auto;padding:150px 32px 80px;display:grid;
   grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:56px;align-items:center}
 .tag{color:var(--green);font-size:13px;margin-bottom:20px}
@@ -79,8 +73,6 @@ h1 .hot{color:var(--amber);text-shadow:0 0 28px rgba(255,157,46,.55),0 0 90px rg
 .statstrip .st:nth-child(2) .num{color:var(--green)}
 .statstrip .st:nth-child(3) .num{color:var(--red)}
 .statstrip .lbl{font-size:11px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
-
-/* ── terminal ── */
 .term{background:#0f0b06;border:1px solid var(--line2);border-radius:10px;overflow:hidden;position:relative;
   box-shadow:0 0 0 1px #000,0 40px 90px -20px rgba(255,106,0,.14),0 30px 70px rgba(0,0,0,.65)}
 .term::after{content:"";position:absolute;inset:0;pointer-events:none;
@@ -96,15 +88,11 @@ h1 .hot{color:var(--amber);text-shadow:0 0 28px rgba(255,157,46,.55),0 0 90px rg
 .c-stream{color:#cdeed8}.c-stat{color:var(--dim)}
 .cursor{display:inline-block;width:8px;height:15px;background:var(--amber);vertical-align:-2px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-
-/* ── ticker ── */
 .ticker{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg2);overflow:hidden;white-space:nowrap;padding:13px 0}
 .ticker .track{display:inline-block;animation:scroll 30s linear infinite}
 .ticker span{font-size:12px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
 .ticker b{color:var(--amber);font-weight:500;margin:0 18px}
 @keyframes scroll{to{transform:translateX(-50%)}}
-
-/* ── scaffolding ── */
 section{max-width:1240px;margin:0 auto;padding:100px 32px}
 .kicker{color:var(--hot);font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:14px}
 .kicker::before{content:"## ";color:var(--dim)}
@@ -112,8 +100,6 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 .sub{color:var(--muted);max-width:62ch;margin-bottom:48px}
 .sub b{color:var(--pale);font-weight:500}
 .divider{height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent);max-width:1240px;margin:0 auto}
-
-/* ── REPL playground ── */
 .play-term{background:#0f0b06;border:1px solid var(--line2);border-radius:10px;overflow:hidden;cursor:text;
   box-shadow:0 0 0 1px #000,0 30px 70px rgba(0,0,0,.6)}
 .play-out{height:340px;overflow-y:auto;padding:20px 22px;font-size:13px;line-height:1.7}
@@ -130,15 +116,11 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 #play-in{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:13px;caret-color:var(--amber)}
 .play-hint{font-size:11px;color:var(--dim);margin-top:14px}
 .play-hint b{color:var(--green);font-weight:500}
-
-/* ── manifesto ── */
 .manifesto{border-left:3px solid var(--hot);padding-left:36px;max-width:900px}
 .manifesto .big{font-family:var(--disp);font-weight:700;font-size:clamp(1.5rem,3vw,2.3rem);line-height:1.25;margin-bottom:26px}
 .manifesto .big em{font-style:normal;color:var(--amber)}
 .manifesto p{color:var(--muted);margin-bottom:16px;max-width:66ch}
 .manifesto p b{color:var(--pale);font-weight:500}
-
-/* ── benchmarks ── */
 .bench{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}
 .bench-head,.bench-row{display:grid;grid-template-columns:1.4fr 2fr .8fr 1fr .9fr;gap:16px;align-items:center;padding:16px 24px}
 .bench-head{background:var(--panel2);border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
@@ -160,8 +142,6 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 .chip.r{color:var(--red);border-color:rgba(255,92,61,.4);background:rgba(255,92,61,.08)}
 .bench-note{font-size:12px;color:var(--dim);margin-top:16px}
 .bench-note b{color:var(--muted);font-weight:500}
-
-/* ── KV playground ── */
 .kv-wrap{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:40px;align-items:start}
 .kv-presets{display:flex;flex-direction:column;gap:12px}
 .kv-btn{text-align:left;cursor:pointer;font-family:var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:8px;
@@ -184,8 +164,6 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 .kv-stat .v{font-family:var(--disp);font-weight:700;font-size:24px;transition:color .3s}
 .kv-stat .k{font-size:11px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:4px}
 #kv-gb{color:var(--amber)}#kv-x{color:var(--green)}#kv-loss{color:var(--pale)}
-
-/* ── VRAM calculator ── */
 .calc{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:40px;align-items:start}
 .calc-ctl{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px}
 .calc-ctl label{display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:20px 0 8px}
@@ -210,8 +188,6 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 .gpu-chip.ok{border-color:rgba(93,240,162,.5);color:var(--green);background:rgba(93,240,162,.08);box-shadow:0 0 14px rgba(93,240,162,.2)}
 .gpu-chip.no{border-color:rgba(255,92,61,.35);color:var(--red);background:rgba(255,92,61,.05)}
 .calc-note{font-size:11px;color:var(--dim);margin-top:18px}
-
-/* ── spec decode ── */
 .spec-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:48px;align-items:center}
 .tokline{display:flex;gap:8px;flex-wrap:wrap;margin:26px 0}
 .tok{width:44px;height:44px;border-radius:6px;display:flex;align-items:center;justify-content:center;
@@ -225,8 +201,6 @@ h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);
 .spec-side .big{font-family:var(--disp);font-weight:900;font-size:clamp(2.4rem,4vw,3.6rem);color:var(--green);
   text-shadow:0 0 30px rgba(93,240,162,.4);line-height:1}
 .spec-side .big-lbl{font-size:11px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase;margin-top:8px}
-
-/* ── backends ── */
 .backend-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:40px}
 .backend{border:1px solid var(--line);border-radius:8px;padding:22px 14px;text-align:center;background:var(--panel);
   transition:border-color .2s,transform .15s,box-shadow .2s}
