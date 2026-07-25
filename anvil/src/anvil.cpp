@@ -81,10 +81,10 @@ struct KVPreset {
     int v_idx;
 };
 static const KVPreset KV_PRESETS[] = {
-    { "Recommended   (K=q8_0,   V=turbo3)  ~4.6x  <1.5% PPL", 1, 3 },
-    { "Balanced      (K=turbo4, V=turbo3)  ~4.2x  <2% PPL",   2, 3 },
-    { "Max Compress  (K=turbo4, V=turbo2)  ~6.1x  ~3% PPL",   2, 4 },
-    { "Quality       (K=f16,    V=f16)     1x     baseline",   0, 0 },
+    { "Recommended   (K=turbo4, V=turbo3)  4.2x  ~1% loss",   2, 3 },
+    { "Quality+      (K=q8_0,   V=turbo3)  ~3x   <1% loss",   1, 3 },
+    { "Max Compress  (K=turbo4, V=turbo2)  6.1x  ~3% loss",   2, 4 },
+    { "No Compress   (K=f16,    V=f16)     1x    baseline",    0, 0 },
     { "Custom...",                                              -1, -1 },
 };
 static const int KV_PRESET_COUNT = 5;
