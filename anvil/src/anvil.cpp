@@ -493,9 +493,10 @@ static void print_usage() {
     printf("  -p, --prompt <text>      User prompt (non-interactive mode)\n");
     printf("  -n, --max-tokens <n>     Max tokens to generate (default: unlimited)\n\n");
     printf("TurboQuant KV presets (from setup TUI):\n");
-    printf("  Recommended:  K=q8_0   V=turbo3  (~4.6x, <1.5%% PPL loss)\n");
-    printf("  Balanced:     K=turbo4 V=turbo3  (~4.2x)\n");
-    printf("  Max Compress: K=turbo4 V=turbo2  (~6.1x)\n\n");
+    printf("TurboQuant KV presets (from setup TUI):\n");
+    printf("  Recommended:  K=turbo4 V=turbo3  (4.2x, ~1%% quality loss)\n");
+    printf("  Quality+:     K=q8_0   V=turbo3  (~3x,  <1%% quality loss)\n");
+    printf("  High Compression: K=turbo4 V=turbo2  (6.1x, ~3%% quality loss)\n\n");
     printf("Examples:\n");
     printf("  anvil run model.gguf\n");
     printf("  anvil run model.gguf --ctx 131072 --ngl 99 --type-k q8_0 --type-v turbo3\n");
