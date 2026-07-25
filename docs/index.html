@@ -1,0 +1,1288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>anvil — Forge anything. Local LLMs in your terminal.</title>
+<meta name="description" content="anvil is a terminal-native LLM client on the TurboQuant llama.cpp fork. 4.2x KV compression, ~1% quality loss, MTP+NextN speculative decoding, zero cloud.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0a07; --bg2:#110d08; --panel:#151009; --panel2:#1a140b;
+  --line:#2c2214; --line2:#3d2f1c;
+  --amber:#ff9d2e; --hot:#ff6a00; --pale:#ffc46b;
+  --green:#5df0a2; --red:#ff5c3d;
+  --text:#ece2d0; --muted:#a8987f; --dim:#6f6152;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --disp:'Unbounded',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:15px;line-height:1.6;overflow-x:hidden}
+::selection{background:var(--hot);color:#0c0a07}
+
+/* ── ambient layers ── */
+.bg-grid{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,157,46,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,157,46,.035) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:radial-gradient(ellipse 90% 70% at 50% 0%,#000 30%,transparent 100%)}
+.furnace{position:fixed;left:0;right:0;bottom:-20vh;height:70vh;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse 60% 55% at 50% 100%,rgba(255,106,0,.16),rgba(255,106,0,.05) 55%,transparent 75%);
+  animation:breathe 6s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.7}50%{opacity:1}}
+#embers{position:fixed;inset:0;z-index:1;pointer-events:none}
+.vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(ellipse 120% 90% at 50% 40%,transparent 60%,rgba(0,0,0,.5) 100%)}
+main,nav,footer{position:relative;z-index:2}
+#progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--hot),var(--amber));z-index:100;box-shadow:0 0 12px rgba(255,157,46,.7)}
+
+/* ── nav ── */
+nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;gap:26px;
+  padding:14px 32px;background:rgba(12,10,7,.9);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+.brand{font-family:var(--disp);font-weight:900;font-size:17px;color:var(--text);text-decoration:none}
+.brand b{color:var(--amber)}
+.brand::before{content:"⚒ ";color:var(--hot)}
+nav .links{display:flex;gap:20px;margin-left:8px}
+nav .links a{color:var(--muted);text-decoration:none;font-size:12.5px;position:relative;transition:color .2s}
+nav .links a::after{content:"";position:absolute;left:0;bottom:-4px;height:1px;width:0;background:var(--amber);transition:width .25s}
+nav .links a:hover{color:var(--pale)} nav .links a:hover::after{width:100%}
+nav .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.ver{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:3px 8px;border-radius:4px}
+.gh-btn{font-family:var(--mono);font-size:13px;font-weight:700;text-decoration:none;color:#0c0a07;background:var(--amber);
+  padding:7px 16px;border-radius:6px;transition:background .2s,transform .15s,box-shadow .2s}
+.gh-btn:hover{background:var(--pale);transform:translateY(-1px);box-shadow:0 6px 20px -6px rgba(255,157,46,.6)}
+
+/* ── hero ── */
+.hero{max-width:1240px;margin:0 auto;padding:150px 32px 80px;display:grid;
+  grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:56px;align-items:center}
+.tag{color:var(--green);font-size:13px;margin-bottom:20px}
+.tag::before{content:"$ ";color:var(--dim)}
+h1{font-family:var(--disp);font-weight:900;font-size:clamp(2.6rem,5.6vw,4.6rem);line-height:.98;letter-spacing:-.01em;margin-bottom:24px}
+h1 .hot{color:var(--amber);text-shadow:0 0 28px rgba(255,157,46,.55),0 0 90px rgba(255,106,0,.35)}
+.lede{color:var(--muted);font-size:15px;max-width:46ch;margin-bottom:30px}
+.lede b{color:var(--pale);font-weight:500}
+.installbox{display:flex;align-items:stretch;border:1px solid var(--line2);border-radius:8px;overflow:hidden;background:#0e0a05;
+  box-shadow:0 0 0 1px #000,0 12px 40px -12px rgba(0,0,0,.7);margin-bottom:34px;transition:border-color .25s,box-shadow .25s}
+.installbox:hover{border-color:var(--amber);box-shadow:0 0 0 1px #000,0 0 30px -8px rgba(255,157,46,.35)}
+.installbox .dollar{padding:14px 0 14px 16px;color:var(--dim)}
+.installbox code{flex:1;padding:14px 10px;color:var(--green);font-size:13px;white-space:nowrap;overflow-x:auto}
+.copybtn{font-family:var(--mono);font-weight:700;font-size:12px;cursor:pointer;border:none;border-left:1px solid var(--line2);
+  background:var(--panel2);color:var(--amber);padding:0 20px;transition:background .2s,color .2s}
+.copybtn:hover{background:var(--amber);color:#0c0a07}
+.copybtn.done{background:var(--green);color:#0c0a07}
+.statstrip{display:flex;border-top:1px solid var(--line);padding-top:22px}
+.statstrip .st{padding-right:28px;margin-right:28px;border-right:1px solid var(--line)}
+.statstrip .st:last-child{border:none;margin:0;padding:0}
+.statstrip .num{font-family:var(--disp);font-weight:700;font-size:26px;color:var(--amber)}
+.statstrip .st:nth-child(2) .num{color:var(--green)}
+.statstrip .st:nth-child(3) .num{color:var(--red)}
+.statstrip .lbl{font-size:11px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+
+/* ── terminal ── */
+.term{background:#0f0b06;border:1px solid var(--line2);border-radius:10px;overflow:hidden;position:relative;
+  box-shadow:0 0 0 1px #000,0 40px 90px -20px rgba(255,106,0,.14),0 30px 70px rgba(0,0,0,.65)}
+.term::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.016) 0 1px,transparent 1px 3px)}
+.term-bar{display:flex;align-items:center;gap:8px;padding:11px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.dot{width:11px;height:11px;border-radius:50%}.dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+.term-title{margin-left:10px;font-size:12px;color:var(--dim)}
+.term-body{padding:18px 20px;height:460px;overflow:hidden;font-size:12.5px;line-height:1.62}
+.term-body .ln{white-space:pre-wrap;word-break:break-word}
+.c-cmd{color:var(--text)}.c-out{color:var(--muted)}
+.c-logo{color:var(--amber);text-shadow:0 0 14px rgba(255,157,46,.4)}
+.c-amber{color:var(--pale)}.c-kv{color:var(--green)}.c-prompt{color:var(--green);font-weight:700}
+.c-stream{color:#cdeed8}.c-stat{color:var(--dim)}
+.cursor{display:inline-block;width:8px;height:15px;background:var(--amber);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ── ticker ── */
+.ticker{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg2);overflow:hidden;white-space:nowrap;padding:13px 0}
+.ticker .track{display:inline-block;animation:scroll 30s linear infinite}
+.ticker span{font-size:12px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+.ticker b{color:var(--amber);font-weight:500;margin:0 18px}
+@keyframes scroll{to{transform:translateX(-50%)}}
+
+/* ── scaffolding ── */
+section{max-width:1240px;margin:0 auto;padding:100px 32px}
+.kicker{color:var(--hot);font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:14px}
+.kicker::before{content:"## ";color:var(--dim)}
+h2{font-family:var(--disp);font-weight:700;font-size:clamp(1.7rem,3.2vw,2.6rem);margin-bottom:16px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin-bottom:48px}
+.sub b{color:var(--pale);font-weight:500}
+.divider{height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent);max-width:1240px;margin:0 auto}
+
+/* ── REPL playground ── */
+.play-term{background:#0f0b06;border:1px solid var(--line2);border-radius:10px;overflow:hidden;cursor:text;
+  box-shadow:0 0 0 1px #000,0 30px 70px rgba(0,0,0,.6)}
+.play-out{height:340px;overflow-y:auto;padding:20px 22px;font-size:13px;line-height:1.7}
+.play-out .pl{white-space:pre-wrap;word-break:break-word}
+.pl-cmd{color:var(--text);font-weight:700}
+.pl-out{color:var(--muted)}
+.pl-logo{color:var(--amber);text-shadow:0 0 12px rgba(255,157,46,.4)}
+.pl-kv{color:var(--green)}
+.pl-ctx{color:var(--pale)}
+.pl-stream{color:#cdeed8}
+.pl-stat{color:var(--dim)}
+.play-inrow{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);padding:14px 22px;background:#0d0903}
+.play-inrow .gt{color:var(--green);font-weight:700}
+#play-in{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:13px;caret-color:var(--amber)}
+.play-hint{font-size:11px;color:var(--dim);margin-top:14px}
+.play-hint b{color:var(--green);font-weight:500}
+
+/* ── manifesto ── */
+.manifesto{border-left:3px solid var(--hot);padding-left:36px;max-width:900px}
+.manifesto .big{font-family:var(--disp);font-weight:700;font-size:clamp(1.5rem,3vw,2.3rem);line-height:1.25;margin-bottom:26px}
+.manifesto .big em{font-style:normal;color:var(--amber)}
+.manifesto p{color:var(--muted);margin-bottom:16px;max-width:66ch}
+.manifesto p b{color:var(--pale);font-weight:500}
+
+/* ── benchmarks ── */
+.bench{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}
+.bench-head,.bench-row{display:grid;grid-template-columns:1.4fr 2fr .8fr 1fr .9fr;gap:16px;align-items:center;padding:16px 24px}
+.bench-head{background:var(--panel2);border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.bench-row{border-bottom:1px solid var(--line);transition:background .2s}
+.bench-row:last-child{border-bottom:none}
+.bench-row:hover{background:var(--panel2)}
+.bench-row.rec{border-left:3px solid var(--amber);background:rgba(255,157,46,.05)}
+.bench-row .cfg{font-weight:700;font-size:13.5px}
+.bench-row.rec .cfg{color:var(--amber)}
+.bench-row .cfg small{display:block;font-weight:400;color:var(--dim);font-size:11px}
+.bar{height:12px;background:#0d0903;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--hot),var(--amber));border-radius:3px;
+  transition:width 1.2s cubic-bezier(.2,.8,.2,1)}
+.bench-row .ppl{font-size:13.5px}
+.bench-row .delta{font-size:12.5px;color:var(--muted)}
+.chip{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;border:1px solid}
+.chip.g{color:var(--green);border-color:rgba(93,240,162,.4);background:rgba(93,240,162,.08)}
+.chip.a{color:var(--amber);border-color:rgba(255,157,46,.4);background:rgba(255,157,46,.08)}
+.chip.r{color:var(--red);border-color:rgba(255,92,61,.4);background:rgba(255,92,61,.08)}
+.bench-note{font-size:12px;color:var(--dim);margin-top:16px}
+.bench-note b{color:var(--muted);font-weight:500}
+
+/* ── KV playground ── */
+.kv-wrap{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:40px;align-items:start}
+.kv-presets{display:flex;flex-direction:column;gap:12px}
+.kv-btn{text-align:left;cursor:pointer;font-family:var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:16px 18px;color:var(--text);transition:border-color .2s,transform .15s,box-shadow .2s,background .2s}
+.kv-btn:hover{border-color:var(--line2);transform:translateX(4px)}
+.kv-btn .nm{font-weight:700;font-size:14px;display:block;margin-bottom:3px}
+.kv-btn .ds{font-size:12px;color:var(--dim)}
+.kv-btn.active{border-color:var(--amber);background:var(--panel2);box-shadow:0 0 24px -8px rgba(255,157,46,.4)}
+.kv-btn.active .nm{color:var(--amber)} .kv-btn.active .ds{color:var(--muted)}
+.kv-viz{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:30px}
+.kv-cap{font-size:12px;color:var(--dim);margin-bottom:22px}
+.kv-cap b{color:var(--muted);font-weight:500}
+.gauge{position:relative;height:38px;background:#0d0903;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-bottom:8px}
+.gauge .fill{height:100%;width:24%;border-radius:5px 0 0 5px;background:linear-gradient(90deg,var(--hot),var(--amber));
+  box-shadow:0 0 22px rgba(255,157,46,.55);transition:width .7s cubic-bezier(.2,.8,.2,1),background .5s;position:relative}
+.gauge .fill::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 10px,rgba(0,0,0,.18) 10px 11px)}
+.gauge-scale{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:30px}
+.kv-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.kv-stat{background:var(--panel2);padding:18px 20px}
+.kv-stat .v{font-family:var(--disp);font-weight:700;font-size:24px;transition:color .3s}
+.kv-stat .k{font-size:11px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:4px}
+#kv-gb{color:var(--amber)}#kv-x{color:var(--green)}#kv-loss{color:var(--pale)}
+
+/* ── VRAM calculator ── */
+.calc{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:40px;align-items:start}
+.calc-ctl{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px}
+.calc-ctl label{display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:20px 0 8px}
+.calc-ctl label:first-child{margin-top:0}
+.calc-ctl select{width:100%;background:#0d0903;border:1px solid var(--line2);border-radius:6px;color:var(--pale);
+  font-family:var(--mono);font-size:13px;padding:10px 12px;cursor:pointer;transition:border-color .2s}
+.calc-ctl select:hover{border-color:var(--amber)}
+.calc-ctl input[type=range]{width:100%;accent-color:var(--hot);cursor:pointer}
+.ctx-read{color:var(--amber);font-weight:700;font-size:13px}
+.calc-out{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px}
+.stackbar{height:44px;background:#0d0903;border:1px solid var(--line);border-radius:6px;overflow:hidden;display:flex;margin-bottom:8px}
+.stackbar .w{background:linear-gradient(90deg,#8a5a1f,var(--amber));transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.stackbar .k{background:linear-gradient(90deg,var(--hot),var(--red));transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.stack-scale{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:24px}
+.calc-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:24px}
+.calc-nums>div{background:var(--panel2);padding:16px 18px}
+.calc-nums .v{font-family:var(--disp);font-weight:700;font-size:22px}
+.calc-nums .k{font-size:10.5px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:3px}
+#cn-w{color:var(--amber)}#cn-kv{color:var(--red)}#cn-tot{color:var(--green)}
+.gpu-fit{display:flex;flex-wrap:wrap;gap:10px}
+.gpu-chip{font-size:12px;font-weight:700;padding:8px 14px;border-radius:6px;border:1px solid var(--line);color:var(--dim);transition:all .3s}
+.gpu-chip.ok{border-color:rgba(93,240,162,.5);color:var(--green);background:rgba(93,240,162,.08);box-shadow:0 0 14px rgba(93,240,162,.2)}
+.gpu-chip.no{border-color:rgba(255,92,61,.35);color:var(--red);background:rgba(255,92,61,.05)}
+.calc-note{font-size:11px;color:var(--dim);margin-top:18px}
+
+/* ── spec decode ── */
+.spec-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:48px;align-items:center}
+.tokline{display:flex;gap:8px;flex-wrap:wrap;margin:26px 0}
+.tok{width:44px;height:44px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;border:1px solid var(--line);background:#0d0903;color:var(--dim);transition:all .3s}
+.tok.draft{border-color:var(--line2);color:var(--muted);border-style:dashed}
+.tok.hit{border-color:var(--green);color:var(--green);background:rgba(93,240,162,.1);box-shadow:0 0 16px rgba(93,240,162,.35)}
+.tok.base{border-color:var(--amber);color:var(--amber);background:rgba(255,157,46,.1)}
+.spec-meter{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--green)}
+.spec-side h3{font-family:var(--disp);font-size:16px;margin-bottom:14px;color:var(--pale)}
+.spec-side p{color:var(--muted);font-size:13.5px;margin-bottom:14px}
+.spec-side .big{font-family:var(--disp);font-weight:900;font-size:clamp(2.4rem,4vw,3.6rem);color:var(--green);
+  text-shadow:0 0 30px rgba(93,240,162,.4);line-height:1}
+.spec-side .big-lbl{font-size:11px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase;margin-top:8px}
+
+/* ── backends ── */
+.backend-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:40px}
+.backend{border:1px solid var(--line);border-radius:8px;padding:22px 14px;text-align:center;background:var(--panel);
+  transition:border-color .2s,transform .15s,box-shadow .2s}
+.backend:hover{transform:translateY(-4px);border-color:var(--amber);box-shadow:0 12px 30px -12px rgba(255,157,46,.35)}
+.backend .ic{font-size:24px;display:block;margin-bottom:10px}
+.backend .bn{font-weight:700;font-size:13px}
+.backend .bd{font-size:10.5px;color:var(--dim);margin-top:3px}
+.hw-log{background:#0e0a05;border:1px solid var(--line);border-radius:8px;padding:22px 26px;font-size:13px}
+.hw-log .l{color:var(--muted);margin-bottom:6px}
+.hw-log .l b{color:var(--green);font-weight:500}
+.hw-log .ok{color:var(--green)}
+
+/* ── pipeline ── */
+.pipe{position:relative;display:grid;grid-template-columns:repeat(6,1fr);margin-top:20px}
+.pipe::before{content:"";position:absolute;top:26px;left:4%;right:4%;height:2px;background:var(--line2)}
+.pipe .pdot{position:absolute;top:22px;left:4%;width:10px;height:10px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 14px var(--amber);animation:travel 4s linear infinite}
+.pipe .pdot.d2{animation-delay:1.3s;background:var(--green);box-shadow:0 0 14px var(--green)}
+.pipe .pdot.d3{animation-delay:2.6s;background:var(--red);box-shadow:0 0 14px var(--red)}
+@keyframes travel{0%{left:4%;opacity:0}8%{opacity:1}92%{opacity:1}100%{left:96%;opacity:0}}
+.pstage{position:relative;text-align:center;padding-top:52px}
+.pstage .node{width:52px;height:52px;margin:0 auto 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line2);
+  display:flex;align-items:center;justify-content:center;font-size:20px;transition:all .25s;position:relative;z-index:2}
+.pstage:hover .node{border-color:var(--amber);transform:translateY(-4px);box-shadow:0 0 22px rgba(255,157,46,.4)}
+.pstage .pn{font-weight:700;font-size:12.5px;color:var(--pale)}
+.pstage .pd{font-size:10.5px;color:var(--dim);margin-top:3px;padding:0 6px}
+
+/* ── commands ── */
+.cmds{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.cmd{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;transition:border-color .2s,transform .15s,box-shadow .2s}
+.cmd:hover{border-color:var(--green);transform:translateY(-3px);box-shadow:0 10px 30px -12px rgba(93,240,162,.25)}
+.cmd kbd{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--green);background:#0d0903;border:1px solid var(--line2);
+  border-bottom-width:2px;border-radius:5px;padding:3px 9px;display:inline-block;margin-bottom:10px}
+.cmd p{font-size:12px;color:var(--dim)}
+
+/* ── comparison ── */
+.cmp-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table.cmp{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}
+.cmp th,.cmp td{padding:15px 20px;text-align:center;border-bottom:1px solid var(--line)}
+.cmp th{background:var(--panel2);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.cmp th.us{color:var(--amber)}
+.cmp td:first-child{text-align:left;color:var(--muted);font-weight:500}
+.cmp tr:last-child td{border-bottom:none}
+.cmp tr:hover td{background:rgba(255,157,46,.03)}
+.cmp td.us{background:rgba(255,157,46,.06);border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.yes{color:var(--green);font-weight:700}.no{color:var(--red);font-weight:700}.meh{color:var(--dim)}
+
+/* ── config ── */
+.cfg-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:48px;align-items:start}
+.codeblock{background:#0e0a05;border:1px solid var(--line);border-radius:10px;padding:26px 28px;font-size:13px;line-height:1.85;overflow-x:auto}
+.codeblock .k{color:var(--pale)} .codeblock .s{color:var(--green)} .codeblock .n{color:var(--amber)}
+.codeblock .b{color:var(--red)} .codeblock .cm{color:var(--dim)}
+.cfg-notes{list-style:none}
+.cfg-notes li{padding-left:24px;position:relative;margin-bottom:16px;color:var(--muted);font-size:13.5px}
+.cfg-notes li::before{content:"▸";position:absolute;left:0;color:var(--hot)}
+.cfg-notes li b{color:var(--pale);font-weight:500}
+
+/* ── use cases ── */
+.uses{display:flex;flex-direction:column}
+.use{display:grid;grid-template-columns:90px 1fr minmax(0,1.2fr);gap:32px;align-items:center;padding:30px 0;border-bottom:1px solid var(--line);transition:background .2s}
+.use:hover{background:rgba(255,157,46,.03)}
+.use .n{font-family:var(--disp);font-weight:900;font-size:34px;color:var(--line2);transition:color .3s}
+.use:hover .n{color:var(--amber)}
+.use h3{font-family:var(--disp);font-size:17px;margin-bottom:8px}
+.use p{color:var(--muted);font-size:13.5px}
+.use .ex{background:#0e0a05;border:1px solid var(--line);border-radius:6px;padding:14px 18px;font-size:12px;color:var(--green);overflow-x:auto;white-space:pre}
+
+/* ── FAQ ── */
+.faq{max-width:860px}
+.qa{border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--panel);overflow:hidden;transition:border-color .2s}
+.qa.open{border-color:var(--line2)}
+.qa button{width:100%;text-align:left;background:none;border:none;cursor:pointer;font-family:var(--mono);
+  color:var(--text);font-size:14.5px;font-weight:700;padding:20px 24px;display:flex;justify-content:space-between;align-items:center;gap:20px}
+.qa button .pm{color:var(--amber);font-size:18px;transition:transform .3s;flex-shrink:0}
+.qa.open button .pm{transform:rotate(45deg)}
+.qa .a{max-height:0;overflow:hidden;transition:max-height .4s cubic-bezier(.2,.8,.2,1)}
+.qa .a p{padding:0 24px 22px;color:var(--muted);font-size:13.5px}
+.qa .a p b{color:var(--pale);font-weight:500}
+
+/* ── roadmap ── */
+.road{position:relative;padding-left:36px;max-width:820px}
+.road::before{content:"";position:absolute;left:8px;top:6px;bottom:6px;width:2px;background:linear-gradient(180deg,var(--hot),var(--line))}
+.road-item{position:relative;padding-bottom:38px}
+.road-item::before{content:"";position:absolute;left:-33px;top:6px;width:14px;height:14px;border-radius:50%;
+  background:var(--bg);border:3px solid var(--hot);box-shadow:0 0 14px rgba(255,106,0,.5)}
+.road-item.done::before{background:var(--green);border-color:var(--green);box-shadow:0 0 14px rgba(93,240,162,.5)}
+.road-item .rv{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--amber)}
+.road-item.done .rv{color:var(--green)}
+.road-item .rt{font-size:11px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-left:10px}
+.road-item p{color:var(--muted);font-size:13.5px;margin-top:6px;max-width:60ch}
+
+/* ── changelog ── */
+.log{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+.log-entry{padding:26px 30px;border-bottom:1px solid var(--line)}
+.log-entry:last-child{border-bottom:none}
+.log-entry .lv{font-family:var(--disp);font-weight:700;color:var(--amber);font-size:15px}
+.log-entry .ld{font-size:11px;color:var(--dim);margin-left:12px}
+.log-entry ul{list-style:none;margin-top:12px}
+.log-entry li{color:var(--muted);font-size:13px;padding-left:20px;position:relative;margin-bottom:6px}
+.log-entry li::before{content:"+";position:absolute;left:0;color:var(--green);font-weight:700}
+
+/* ── install tabs ── */
+.tabs{display:flex;gap:8px;border-bottom:1px solid var(--line)}
+.tabbtn{font-family:var(--mono);font-size:13px;font-weight:700;cursor:pointer;background:none;border:none;
+  border-bottom:2px solid transparent;color:var(--dim);padding:12px 20px;transition:color .2s,border-color .2s}
+.tabbtn:hover{color:var(--muted)}
+.tabbtn.active{color:var(--amber);border-bottom-color:var(--amber)}
+.tabpanel{display:none;background:#0e0a05;border:1px solid var(--line);border-top:none;border-radius:0 0 10px 10px;padding:26px 28px}
+.tabpanel.active{display:block}
+.tabpanel pre{font-size:13px;color:var(--green);line-height:1.8;overflow-x:auto}
+.tabpanel .cm{color:var(--dim)}
+.tabpanel .note{color:var(--muted);font-size:13px;margin-top:14px}
+.tabpanel .note b{color:var(--pale);font-weight:500}
+
+/* ── big CTA ── */
+.cta{border:1px solid var(--line2);border-radius:14px;padding:64px 56px;position:relative;overflow:hidden;
+  background:radial-gradient(ellipse 70% 90% at 85% 110%,rgba(255,106,0,.14),transparent 60%),var(--panel)}
+.cta h2{font-size:clamp(2rem,4.5vw,3.4rem);font-weight:900;margin-bottom:14px}
+.cta h2 .hot{color:var(--amber);text-shadow:0 0 30px rgba(255,157,46,.5)}
+.cta p{color:var(--muted);margin-bottom:34px;max-width:52ch}
+.cta .installbox{max-width:640px;margin-bottom:0}
+
+/* ── footer ── */
+footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 40px}
+.foot{max-width:1240px;margin:0 auto;display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap}
+.foot pre{color:var(--amber);font-size:9px;line-height:1.25;opacity:.85;text-shadow:0 0 12px rgba(255,157,46,.35)}
+.foot .col h4{font-size:11px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase;margin-bottom:14px}
+.foot .col a{display:block;color:var(--muted);text-decoration:none;font-size:13px;margin-bottom:9px;transition:color .2s,transform .15s}
+.foot .col a:hover{color:var(--amber);transform:translateX(3px)}
+.foot-bottom{max-width:1240px;margin:44px auto 0;padding-top:22px;border-top:1px solid var(--line);
+  display:flex;justify-content:space-between;font-size:12px;color:var(--dim);flex-wrap:wrap;gap:10px}
+.foot-bottom b{color:var(--hot);font-weight:500}
+
+#totop{position:fixed;bottom:28px;right:28px;z-index:60;width:46px;height:46px;border-radius:8px;border:1px solid var(--line2);
+  background:var(--panel);color:var(--amber);font-size:18px;cursor:pointer;opacity:0;pointer-events:none;
+  transition:opacity .3s,transform .2s,background .2s}
+#totop.show{opacity:1;pointer-events:auto}
+#totop:hover{background:var(--amber);color:#0c0a07;transform:translateY(-3px)}
+
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.8,.2,1)}
+.reveal.in{opacity:1;transform:none}
+
+@media(max-width:1000px){
+  .hero,.kv-wrap,.spec-grid,.tui-grid,.cfg-grid,.calc{grid-template-columns:1fr}
+  .backend-grid{grid-template-columns:repeat(3,1fr)}
+  .cmds{grid-template-columns:repeat(2,1fr)}
+  .use{grid-template-columns:60px 1fr}.use .ex{grid-column:2}
+  nav .links{display:none}
+  .bench-head,.bench-row{grid-template-columns:1.2fr 1.6fr .8fr 1fr}
+  .bench-head div:nth-child(4),.bench-row .delta{display:none}
+  .pipe{grid-template-columns:repeat(3,1fr);gap:24px 0}.pipe::before,.pipe .pdot{display:none}
+  .man-cols{grid-template-columns:1fr}
+}
+@media(max-width:560px){
+  .cmds,.backend-grid{grid-template-columns:1fr}
+  .statstrip{flex-direction:column;gap:16px}.statstrip .st{border:none;margin:0;padding:0}
+  .cta{padding:44px 28px}
+  .bench-head,.bench-row{grid-template-columns:1.3fr 1.4fr .9fr}
+  .bench-head div:nth-child(3),.bench-row .ppl{display:none}
+  .pipe{grid-template-columns:repeat(2,1fr)}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="furnace"></div>
+<canvas id="embers"></canvas>
+<div class="vignette"></div>
+<div id="progress"></div>
+
+<nav>
+  <a class="brand" href="#">anvil<b>_</b></a>
+  <div class="links">
+    <a href="#try">Try it</a>
+    <a href="#bench">Benchmarks</a>
+    <a href="#kv">KV Cache</a>
+    <a href="#calc">VRAM</a>
+    <a href="#compare">Compare</a>
+    <a href="#faq">FAQ</a>
+    <a href="#install">Install</a>
+  </div>
+  <div class="right">
+    <span class="ver">v0.2.0</span>
+    <a class="gh-btn" href="https://github.com/anvil-llm/anvil">GitHub ↗</a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ═══ HERO ═══ -->
+<header class="hero">
+  <div>
+    <div class="tag">anvil run model.gguf</div>
+    <h1>FORGE<br><span class="hot">ANYTHING.</span></h1>
+    <p class="lede">A terminal-native LLM client built on the <b>TurboQuant llama.cpp fork</b>. Squeeze <b>4.2× more context</b> out of your GPU with ~1% quality loss. No cloud. No API keys. No telemetry. Just you, your hardware, and a hammer.</p>
+    <div class="installbox">
+      <span class="dollar">$</span>
+      <code id="install-cmd">curl -fsSL https://anvil-llm.github.io/install.sh | sh</code>
+      <button class="copybtn" data-copy="#install-cmd">copy</button>
+    </div>
+    <div class="statstrip">
+      <div class="st"><div class="num">4.2×</div><div class="lbl">KV compression</div></div>
+      <div class="st"><div class="num">~1%</div><div class="lbl">quality loss</div></div>
+      <div class="st"><div class="num">0</div><div class="lbl">cloud calls</div></div>
+    </div>
+  </div>
+  <div class="term">
+    <div class="term-bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="term-title">anvil — zsh — 92×28</span>
+    </div>
+    <div class="term-body" id="term"></div>
+  </div>
+</header>
+
+<div class="ticker"><div class="track" id="ticker-track"></div></div>
+
+<!-- ═══ TRY IT — LIVE REPL ═══ -->
+<section id="try">
+  <div class="reveal">
+    <div class="kicker">strike-it-yourself</div>
+    <h2>Don't take our word for it. Type.</h2>
+    <p class="sub">A live slice of the anvil REPL, right here in your browser. Try <b>help</b>, <b>/stats</b>, <b>/ctx</b>, or just say something.</p>
+  </div>
+  <div class="reveal">
+    <div class="play-term" id="play-term">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="term-title">anvil — interactive demo</span>
+      </div>
+      <div class="play-out" id="play-out"></div>
+      <div class="play-inrow">
+        <span class="gt">&gt;</span>
+        <input id="play-in" type="text" autocomplete="off" spellcheck="false" placeholder="type a command or a message…">
+      </div>
+    </div>
+    <p class="play-hint">try: <b>help</b> · <b>/stats</b> · <b>/model</b> · <b>/ctx</b> · <b>/temp 0.9</b> · <b>/clear</b> · or any message</p>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ MANIFESTO ═══ -->
+<section id="why">
+  <div class="reveal">
+    <div class="kicker">why local</div>
+    <div class="manifesto">
+      <div class="big">Your model. Your metal. <em>Your rules.</em></div>
+      <p>Every API call is a lease on someone else's forge. Your prompts cross the wire, your latency rides their traffic, your context window is a line item on their pricing page.</p>
+      <p>anvil runs the whole stack <b>on hardware you own</b> — weights loaded straight into your GPU, KV cache compressed with TurboQuant so long contexts actually fit, tokens streaming to your terminal at native speed. It works on a plane. It works offline. It works on a $200 used GPU and on a 128GB Mac.</p>
+      <p>The model never phones home, because <b>there's no home to phone</b>. Just a single binary, a GGUF file, and the anvil.</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ BENCHMARKS ═══ -->
+<section id="bench">
+  <div class="reveal">
+    <div class="kicker">temper</div>
+    <h2>Numbers don't lie.</h2>
+    <p class="sub">WikiText-2 perplexity from the TurboQuant fork's own benchmarks. Lower PPL is better. The <b>recommended preset</b> buys you 4.2× the context headroom for about a one-percent quality haircut.</p>
+  </div>
+  <div class="bench reveal">
+    <div class="bench-head">
+      <div>K / V cache type</div><div>compression</div><div>ppl ↓</div><div>Δ ppl</div><div>quality</div>
+    </div>
+    <div class="bench-row">
+      <div class="cfg">f16 / f16<small>baseline · no compression</small></div>
+      <div class="bar"><i data-w="16"></i></div>
+      <div class="ppl">6.0125</div><div class="delta">—</div>
+      <div><span class="chip g">reference</span></div>
+    </div>
+    <div class="bench-row">
+      <div class="cfg">q8_0 / q8_0<small>8-bit · near lossless</small></div>
+      <div class="bar"><i data-w="33"></i></div>
+      <div class="ppl">6.0126</div><div class="delta">+0.0001</div>
+      <div><span class="chip g">~0%</span></div>
+    </div>
+    <div class="bench-row rec">
+      <div class="cfg">turbo4 / turbo3<small>recommended · WHT-rotated VQ</small></div>
+      <div class="bar"><i data-w="69"></i></div>
+      <div class="ppl">6.0722</div><div class="delta">+0.0597</div>
+      <div><span class="chip a">~1%</span></div>
+    </div>
+    <div class="bench-row">
+      <div class="cfg">turbo4 / turbo2<small>maximum compression</small></div>
+      <div class="bar"><i data-w="100"></i></div>
+      <div class="ppl">6.1946</div><div class="delta">+0.1821</div>
+      <div><span class="chip r">~3%</span></div>
+    </div>
+  </div>
+  <p class="bench-note reveal">Source: <b>AtomicBot-ai/atomic-llama-cpp-turboquant</b> · WikiText-2 · KV cache compression factor vs f16 baseline.</p>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ KV PLAYGROUND ═══ -->
+<section id="kv">
+  <div class="reveal">
+    <div class="kicker">compress</div>
+    <h2>Compress the cache, not the conversation.</h2>
+    <p class="sub">TurboQuant uses <b>WHT-rotated vector quantization</b> to shrink the KV cache asymmetrically — V tolerates aggressive compression, K stays sharp. Pick a preset and watch the memory bill drop.</p>
+  </div>
+  <div class="kv-wrap reveal">
+    <div class="kv-presets" id="kv-presets"></div>
+    <div class="kv-viz">
+      <div class="kv-cap">KV cache footprint · <b>Llama 3.1 70B</b> · 32K context</div>
+      <div class="gauge"><div class="fill" id="kv-fill"></div></div>
+      <div class="gauge-scale"><span>0 GB</span><span>5 GB</span><span>10 GB</span><span>15 GB</span><span>20 GB</span></div>
+      <div class="kv-stats">
+        <div class="kv-stat"><div class="v" id="kv-gb">4.8 GB</div><div class="k">VRAM used</div></div>
+        <div class="kv-stat"><div class="v" id="kv-x">4.2×</div><div class="k">compression</div></div>
+        <div class="kv-stat"><div class="v" id="kv-loss">~1%</div><div class="k">quality loss</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ VRAM CALCULATOR ═══ -->
+<section id="calc">
+  <div class="reveal">
+    <div class="kicker">measure</div>
+    <h2>Will it fit? Do the math.</h2>
+    <p class="sub">Dial in a model, a quant, and a context window — see the VRAM bill, and which GPUs can take the heat. <b>Estimates</b>, but honest ones.</p>
+  </div>
+  <div class="calc reveal">
+    <div class="calc-ctl">
+      <label>Model size</label>
+      <select id="c-model">
+        <option value="7B">7B&nbsp;&nbsp;(32 layers · MHA)</option>
+        <option value="13B">13B&nbsp;(40 layers · MHA)</option>
+        <option value="34B">34B&nbsp;(48 layers · GQA)</option>
+        <option value="70B" selected>70B&nbsp;(80 layers · GQA)</option>
+      </select>
+      <label>Weight quantization</label>
+      <select id="c-wq">
+        <option value="f16">f16&nbsp;&nbsp;(2.0 B/param)</option>
+        <option value="q8_0">q8_0&nbsp;(1.0 B/param)</option>
+        <option value="q4_K" selected>q4_K&nbsp;(0.55 B/param)</option>
+        <option value="q2_K">q2_K&nbsp;(0.30 B/param)</option>
+      </select>
+      <label>KV cache preset</label>
+      <select id="c-kv">
+        <option value="f16/f16">f16 / f16&nbsp;&nbsp;(no compression)</option>
+        <option value="q8_0/turbo3">q8_0 / turbo3</option>
+        <option value="turbo4/turbo3" selected>turbo4 / turbo3&nbsp;(recommended)</option>
+        <option value="turbo4/turbo2">turbo4 / turbo2&nbsp;(max)</option>
+      </select>
+      <label>Context window — <span class="ctx-read" id="c-ctxv">32K</span></label>
+      <input type="range" id="c-ctx" min="2048" max="131072" step="2048" value="32768">
+    </div>
+    <div class="calc-out">
+      <div class="stackbar"><div class="w" id="sb-w"></div><div class="k" id="sb-k"></div></div>
+      <div class="stack-scale"><span style="color:var(--amber)">■ weights</span><span style="color:var(--red)">■ KV cache</span><span>total VRAM</span></div>
+      <div class="calc-nums">
+        <div><div class="v" id="cn-w">0</div><div class="k">weights</div></div>
+        <div><div class="v" id="cn-kv">0</div><div class="k">KV cache</div></div>
+        <div><div class="v" id="cn-tot">0</div><div class="k">total</div></div>
+      </div>
+      <label style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);display:block;margin-bottom:12px">Does it fit?</label>
+      <div class="gpu-fit" id="gpu-fit"></div>
+      <p class="calc-note">Rule of thumb — leave ~1–2 GB headroom for activations. GQA models (34B/70B) have much smaller KV caches than MHA ones.</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ SPECULATIVE DECODING ═══ -->
+<section id="spec">
+  <div class="reveal">
+    <div class="kicker">strike</div>
+    <h2>One swing, many strikes.</h2>
+    <p class="sub">anvil supports <b>MTP</b> and <b>NextN</b> speculative decoding — a draft head proposes several tokens at once, the main model verifies them in a single pass. More tokens per step, same quality.</p>
+  </div>
+  <div class="spec-grid reveal">
+    <div>
+      <div class="tokline" id="tokline"></div>
+      <div class="spec-meter" id="spec-meter">+4 tokens / 1 step</div>
+      <p style="color:var(--dim);font-size:12px;margin-top:14px">amber = autoregressive token · dashed = drafted · green = verified in one pass</p>
+    </div>
+    <div class="spec-side">
+      <div class="big">+30–50%</div>
+      <div class="big-lbl">throughput on supported models</div>
+      <h3 style="margin-top:30px">How it works</h3>
+      <p>The model's extra prediction heads guess the next few tokens cheaply. anvil feeds all of them through the main model at once — if they're right, you get them all in a single decode step.</p>
+      <p>Quality is <b style="color:var(--pale)">bit-identical</b> to normal decoding. Rejected drafts are simply discarded and re-sampled.</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ BACKENDS ═══ -->
+<section id="backends">
+  <div class="reveal">
+    <div class="kicker">read-the-metal</div>
+    <h2>It finds your hardware. You don't.</h2>
+    <p class="sub">anvil probes your system on launch — CPU, RAM, every GPU and its VRAM — and picks a sane layer count automatically. Override with <b>--ngl</b> if you know better.</p>
+  </div>
+  <div class="backend-grid reveal">
+    <div class="backend"><span class="ic">🟢</span><div class="bn">CUDA</div><div class="bd">NVIDIA</div></div>
+    <div class="backend"><span class="ic">🔺</span><div class="bn">Vulkan</div><div class="bd">cross-vendor</div></div>
+    <div class="backend"><span class="ic"></span><div class="bn">Metal</div><div class="bd">Apple Silicon</div></div>
+    <div class="backend"><span class="ic">🔴</span><div class="bn">ROCm</div><div class="bd">AMD</div></div>
+    <div class="backend"><span class="ic">🔷</span><div class="bn">SYCL</div><div class="bd">Intel</div></div>
+    <div class="backend"><span class="ic">⚙️</span><div class="bn">CPU</div><div class="bd">AVX2 / NEON</div></div>
+  </div>
+  <div class="hw-log reveal">
+    <div class="l">Hardware: AMD Ryzen 9 7950X | x86_64 | 64 GB RAM | 32 threads</div>
+    <div class="l">GPU: NVIDIA GeForce RTX 4090 (NVIDIA) 24564 MB VRAM [discrete]</div>
+    <div class="l">→ offloading <b>99 layers</b> to GPU <span class="ok">✓</span></div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ PIPELINE ANATOMY ═══ -->
+<section id="anatomy">
+  <div class="reveal">
+    <div class="kicker">anatomy</div>
+    <h2>From keystroke to token.</h2>
+    <p class="sub">Every prompt travels the same road through the forge. Here's what your hardware is actually doing, ~40 times a second.</p>
+  </div>
+  <div class="pipe reveal">
+    <span class="pdot"></span><span class="pdot d2"></span><span class="pdot d3"></span>
+    <div class="pstage"><div class="node">⌨️</div><div class="pn">prompt</div><div class="pd">you type at the anvil</div></div>
+    <div class="pstage"><div class="node">🔤</div><div class="pn">tokenize</div><div class="pd">vocab → token IDs</div></div>
+    <div class="pstage"><div class="node">🗜️</div><div class="pn">KV cache</div><div class="pd">TurboQuant compresses K/V</div></div>
+    <div class="pstage"><div class="node">🔥</div><div class="pn">GPU decode</div><div class="pd">flash attention, all layers</div></div>
+    <div class="pstage"><div class="node">🎲</div><div class="pn">sample</div><div class="pd">min-p + temperature</div></div>
+    <div class="pstage"><div class="node">⚡</div><div class="pn">stream</div><div class="pd">UTF-8 → your terminal</div></div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ TUI WIZARD ═══ -->
+<section id="tui">
+  <div class="reveal">
+    <div class="kicker">first-light</div>
+    <h2>Your first run forges the config.</h2>
+    <p class="sub">No YAML to hand-edit. The first time you launch, anvil opens a <b>full TUI setup wizard</b> — built with FTXUI — reads your hardware, and walks you through context, KV compression, flash attention, and temperature.</p>
+  </div>
+  <div class="tui-grid reveal" style="display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:48px;align-items:center">
+    <div style="background:#0f0b06;border:1px solid var(--line2);border-radius:10px;padding:24px 26px;font-size:12.5px;line-height:1.7;box-shadow:0 0 0 1px #000,0 30px 70px rgba(0,0,0,.6)">
+<pre style="color:var(--amber);text-shadow:0 0 12px rgba(255,157,46,.4);white-space:pre;font-size:10px;line-height:1.3">   ░███                          ░██░██ 
+  ░██░██                            ░██ 
+ ░██  ░██  ░████████  ░██    ░██ ░██░██ 
+░█████████ ░██    ░██ ░██    ░██ ░██░██ 
+░██    ░██ ░██    ░██  ░██  ░██  ░██░██ 
+░██    ░██ ░██    ░██   ░██░██   ░██░██ 
+░██    ░██ ░██    ░██    ░███    ░██░██</pre>
+      <div style="color:var(--pale);font-weight:700">  First-time setup  v0.2.0</div>
+      <div style="color:var(--dim)">  Detected hardware:</div>
+      <div style="color:var(--dim)">    CPU : AMD Ryzen 9 7950X · RAM : 64 GB</div>
+      <div style="color:var(--dim)">    GPU : NVIDIA RTX 4090 (24564 MB)</div>
+      <br>
+      <div style="color:var(--pale);font-weight:700">  Context size</div>
+      <div style="color:var(--muted)">    · 8K tokens</div>
+      <div style="color:var(--green);font-weight:700">    ▸ 32K tokens</div>
+      <div style="color:var(--muted)">    · 128K tokens</div>
+      <div style="color:var(--pale);font-weight:700">  KV cache compression</div>
+      <div style="color:var(--green);font-weight:700">    ▸ Recommended (K=turbo4, V=turbo3)</div>
+      <div style="color:var(--muted)">    · Max Compress (K=turbo4, V=turbo2)</div>
+      <div style="color:var(--pale);font-weight:700">  Flash attention</div>
+      <div style="color:var(--green);font-weight:700">    ▸ on (recommended)</div>
+      <br>
+      <div style="color:var(--green)">  Active: K=turbo4 V=turbo3</div>
+      <div style="color:var(--dim)">  Tab switch  ↑/↓ change  Enter confirm  q cancel</div>
+    </div>
+    <div>
+      <ul style="list-style:none">
+        <li style="padding-left:24px;position:relative;margin-bottom:14px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500;display:block">Hardware-aware defaults</b>It reads your GPU's VRAM and suggests a layer count and context size that will actually fit.</li>
+        <li style="padding-left:24px;position:relative;margin-bottom:14px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500;display:block">KV presets with real numbers</b>Every compression option shows its factor and quality cost — no guessing.</li>
+        <li style="padding-left:24px;position:relative;margin-bottom:14px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500;display:block">Custom mode</b>Pick K and V cache types independently, or type any context size by hand.</li>
+        <li style="padding-left:24px;position:relative;margin-bottom:14px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500;display:block">Written once, editable forever</b>Your choices land in <span style="color:var(--green)">~/.anvil/config.json</span>. CLI flags override it any time.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ FEATURES / MAN PAGE ═══ -->
+<section id="features">
+  <div class="reveal">
+    <div class="kicker">capabilities</div>
+    <h2>Read the fine print.</h2>
+  </div>
+  <div class="reveal" style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:44px 48px">
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--amber);border-bottom:1px solid var(--line2);padding-bottom:12px;margin-bottom:30px;letter-spacing:.1em">
+      <span>ANVIL(1)</span><span>User Commands</span><span>ANVIL(1)</span>
+    </div>
+    <div class="man-cols" style="display:grid;grid-template-columns:1fr 1fr;gap:20px 60px">
+      <div>
+        <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin-bottom:10px">NAME</h3>
+        <p style="color:var(--muted);font-size:13.5px">anvil — forge-grade local LLM inference in your terminal</p>
+        <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin:22px 0 10px">SYNOPSIS</h3>
+        <pre style="background:#0d0903;border:1px solid var(--line);border-radius:6px;padding:14px 18px;font-size:12.5px;color:var(--green);overflow-x:auto">anvil run model.gguf [--ctx N] [--ngl N]
+    [--type-k T] [--type-v T] [--mtp]
+    [--triattn] [--grammar f.gbnf] [-p "..."]</pre>
+        <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin:22px 0 10px">DESCRIPTION</h3>
+        <p style="color:var(--muted);font-size:13.5px">anvil loads any GGUF model, auto-detects your hardware, and drops you into a streaming chat REPL. First run launches a TUI wizard; after that it just forges.</p>
+      </div>
+      <div>
+        <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin-bottom:10px">FEATURES</h3>
+        <ul style="list-style:none">
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">TurboQuant KV cache</b> — asymmetric K/V, 4.2× default</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">MTP + NextN</b> speculative decoding</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">Flash Attention</b> on by default</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">TriAttention</b> intelligent KV eviction</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">GBNF grammars</b> for structured output</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">Hardware autodetect</b> — CUDA · Vulkan · Metal · ROCm · CPU</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">Live stats</b> — tokens/sec, context fill, session export</li>
+          <li style="padding-left:20px;position:relative;margin-bottom:8px;color:var(--muted);font-size:13.5px"><span style="position:absolute;left:0;color:var(--hot)">▸</span><b style="color:var(--pale);font-weight:500">Single binary</b> — zero telemetry, zero cloud</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ COMMANDS ═══ -->
+<section id="commands">
+  <div class="reveal">
+    <div class="kicker">hammer-strokes</div>
+    <h2>Commands at the anvil.</h2>
+    <p class="sub">Everything you need mid-conversation, one keystroke away.</p>
+  </div>
+  <div class="cmds reveal">
+    <div class="cmd"><kbd>/stats</kbd><p>tokens generated, avg t/s, context fill, KV types</p></div>
+    <div class="cmd"><kbd>/undo</kbd><p>strike out the last turn and rebuild the cache</p></div>
+    <div class="cmd"><kbd>/export</kbd><p>save the session to markdown in ~/.anvil/sessions</p></div>
+    <div class="cmd"><kbd>/clear</kbd><p>quench the context and start fresh</p></div>
+    <div class="cmd"><kbd>/model</kbd><p>arch, trained context, encoder/decoder, GPU layers</p></div>
+    <div class="cmd"><kbd>/temp 0.9</kbd><p>retune sampling temperature on the fly</p></div>
+    <div class="cmd"><kbd>/ctx</kbd><p>context usage bar, color-coded by heat</p></div>
+    <div class="cmd"><kbd>/exit</kbd><p>put down the hammer</p></div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ COMPARISON ═══ -->
+<section id="compare">
+  <div class="reveal">
+    <div class="kicker">weigh</div>
+    <h2>anvil vs. the field.</h2>
+    <p class="sub">We respect the other tools. We also think you should know what you're giving up.</p>
+  </div>
+  <div class="cmp-wrap reveal">
+    <table class="cmp">
+      <thead><tr><th></th><th class="us">anvil</th><th>ollama</th><th>llama.cpp CLI</th><th>LM Studio</th></tr></thead>
+      <tbody>
+        <tr><td>TurboQuant KV cache</td><td class="us yes">✓ native</td><td class="no">✗</td><td class="meh">fork only</td><td class="no">✗</td></tr>
+        <tr><td>MTP / NextN spec decode</td><td class="us yes">✓</td><td class="no">✗</td><td class="meh">fork only</td><td class="no">✗</td></tr>
+        <tr><td>First-run TUI wizard</td><td class="us yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="meh">GUI</td></tr>
+        <tr><td>Terminal-native</td><td class="us yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗ (app)</td></tr>
+        <tr><td>Asymmetric K/V control</td><td class="us yes">✓</td><td class="no">✗</td><td class="meh">flags</td><td class="no">✗</td></tr>
+        <tr><td>Session export / undo</td><td class="us yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="meh">partial</td></tr>
+        <tr><td>Open source</td><td class="us yes">✓ MIT</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
+        <tr><td>Telemetry</td><td class="us yes">none</td><td class="meh">some</td><td class="yes">none</td><td class="no">yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ CONFIG ═══ -->
+<section id="config">
+  <div class="reveal">
+    <div class="kicker">the-ledger</div>
+    <h2>One config file. Fully yours.</h2>
+    <p class="sub">Everything the wizard writes lives in <b>~/.anvil/config.json</b>. Edit it by hand, version it, symlink it across machines.</p>
+  </div>
+  <div class="cfg-grid reveal">
+    <div class="codeblock"><span class="cm">// ~/.anvil/config.json</span>
+{
+  <span class="k">"version"</span>:    <span class="n">2</span>,
+  <span class="k">"ngl"</span>:        <span class="n">99</span>,            <span class="cm">// GPU layers</span>
+  <span class="k">"n_ctx"</span>:      <span class="n">32768</span>,         <span class="cm">// context window</span>
+  <span class="k">"n_threads"</span>:  <span class="n">0</span>,             <span class="cm">// 0 = auto</span>
+  <span class="k">"temp"</span>:       <span class="n">0.8</span>,
+  <span class="k">"flash_attn"</span>: <span class="b">true</span>,
+  <span class="k">"mtp"</span>:        <span class="b">false</span>,          <span class="cm">// spec decode</span>
+  <span class="k">"triattn"</span>:    <span class="b">false</span>,          <span class="cm">// KV eviction</span>
+  <span class="k">"type_k"</span>:     <span class="s">"turbo4"</span>,       <span class="cm">// K cache</span>
+  <span class="k">"type_v"</span>:     <span class="s">"turbo3"</span>,       <span class="cm">// V cache</span>
+  <span class="k">"model"</span>:      <span class="s">"llama-3.1.gguf"</span>
+}</div>
+    <ul class="cfg-notes">
+      <li><b>Versioned &amp; migrated</b>Older configs are upgraded automatically — nothing breaks on update.</li>
+      <li><b>CLI always wins</b>Any flag you pass overrides the file, and the file is updated to match.</li>
+      <li><b>type_k / type_v are independent</b>Mix and match any of f16, q8_0, turbo4, turbo3, turbo2 per side.</li>
+      <li><b>Sessions live alongside</b>Exports land in <span style="color:var(--green)">~/.anvil/sessions/</span> as timestamped markdown.</li>
+    </ul>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ USE CASES ═══ -->
+<section id="uses">
+  <div class="reveal">
+    <div class="kicker">what-will-you-forge</div>
+    <h2>One binary, many blades.</h2>
+  </div>
+  <div class="uses reveal">
+    <div class="use">
+      <div class="n">01</div>
+      <div><h3>Offline copilot</h3><p>Code review and generation on a plane, in a basement, behind a firewall. Your code never leaves the room.</p></div>
+      <div class="ex">anvil run qwen-coder.gguf --ngl 99</div>
+    </div>
+    <div class="use">
+      <div class="n">02</div>
+      <div><h3>Long-document research</h3><p>TurboQuant's 4.2× KV compression means whole papers and codebases fit in context on a single GPU.</p></div>
+      <div class="ex">anvil run model.gguf --ctx 131072 --type-k turbo4 --type-v turbo3</div>
+    </div>
+    <div class="use">
+      <div class="n">03</div>
+      <div><h3>Structured output</h3><p>GBNF grammars constrain the model to valid JSON, SQL, or your own format — guaranteed by the sampler.</p></div>
+      <div class="ex">anvil run model.gguf --grammar json.gbnf -p "list 3 colors"</div>
+    </div>
+    <div class="use">
+      <div class="n">04</div>
+      <div><h3>Batch &amp; scripts</h3><p>Single-shot mode pipes cleanly into shell pipelines. Generate, grep, forge on.</p></div>
+      <div class="ex">anvil run model.gguf -p "summarize: $(cat notes.txt)"</div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ FAQ ═══ -->
+<section id="faq">
+  <div class="reveal">
+    <div class="kicker">ask-the-smith</div>
+    <h2>Frequently struck questions.</h2>
+  </div>
+  <div class="faq reveal">
+    <div class="qa"><button>Do I need a GPU?<span class="pm">+</span></button>
+      <div class="a"><p>No — anvil runs on CPU with AVX2/NEON. But with a GPU it auto-offloads layers, and TurboQuant's KV compression means <b>even modest VRAM fits long contexts</b>. An RTX 3060 12GB is a perfectly good anvil.</p></div></div>
+    <div class="qa"><button>What models work?<span class="pm">+</span></button>
+      <div class="a"><p>Any <b>GGUF</b> file that llama.cpp supports — Llama, Qwen, Gemma, DeepSeek, Mistral, Phi, and friends. MTP/NextN speculative decoding additionally needs a model with prediction heads (Gemma 4, Qwen 3.6).</p></div></div>
+    <div class="qa"><button>How is this different from ollama?<span class="pm">+</span></button>
+      <div class="a"><p>ollama is a great general-purpose server. anvil is a <b>terminal-first power tool</b> built specifically on the TurboQuant fork — you get asymmetric KV compression, speculative decoding, a setup TUI, and per-session stats that ollama doesn't expose. No daemon, no server, just a binary.</p></div></div>
+    <div class="qa"><button>What is TurboQuant actually doing?<span class="pm">+</span></button>
+      <div class="a"><p>It applies a <b>Walsh–Hadamard transform</b> to KV vectors, then vector-quantizes them. The rotation spreads outliers evenly, so quantization error stays tiny. V tolerates more compression than K — so anvil compresses them <b>asymmetrically</b> (turbo4/turbo3) for the best size/quality trade.</p></div></div>
+    <div class="qa"><button>Does anything leave my machine?<span class="pm">+</span></button>
+      <div class="a"><p><b>Nothing.</b> No telemetry, no update checks, no crash reports, no network calls at runtime. The only time anvil touches the network is when you install it.</p></div></div>
+    <div class="qa"><button>Can I change settings without re-running the wizard?<span class="pm">+</span></button>
+      <div class="a"><p>Yes. Edit <b>~/.anvil/config.json</b> directly, or pass CLI flags (<span style="color:var(--green)">--ctx</span>, <span style="color:var(--green)">--type-k</span>, <span style="color:var(--green)">--ngl</span>, …) which override and persist automatically.</p></div></div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ ROADMAP ═══ -->
+<section id="roadmap">
+  <div class="reveal">
+    <div class="kicker">the-forge-ahead</div>
+    <h2>What's heating up.</h2>
+  </div>
+  <div class="road reveal">
+    <div class="road-item done"><span class="rv">v0.1.0</span><span class="rt">shipped</span><p>First light. Chat REPL, hardware detection, TUI wizard, TurboQuant KV.</p></div>
+    <div class="road-item done"><span class="rv">v0.2.0</span><span class="rt">current</span><p>Asymmetric K/V presets, MTP/NextN, /stats /undo /export, UTF-8 streaming, t/s display, session persistence.</p></div>
+    <div class="road-item"><span class="rv">v0.3.0</span><span class="rt">next</span><p><b style="color:var(--pale)">anvil serve</b> — OpenAI-compatible local server. <b style="color:var(--pale)">anvil pull</b> — download models straight from HuggingFace.</p></div>
+    <div class="road-item"><span class="rv">v0.4.0</span><span class="rt">planned</span><p>Multimodal (vision) input, TriAttention context extension UI, conversation branching.</p></div>
+    <div class="road-item"><span class="rv">v0.5.0</span><span class="rt">dreaming</span><p>Agent / tool-use loop, grammar-driven function calling, multi-model routing.</p></div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ CHANGELOG ═══ -->
+<section id="changelog">
+  <div class="reveal">
+    <div class="kicker">struck-so-far</div>
+    <h2>Changelog.</h2>
+  </div>
+  <div class="log reveal">
+    <div class="log-entry">
+      <span class="lv">v0.2.0</span><span class="ld">2026-07-26</span>
+      <ul>
+        <li>Independent K/V cache type selection with presets (turbo4/turbo3 recommended)</li>
+        <li>MTP + NextN speculative decoding support</li>
+        <li>GBNF grammar-constrained output</li>
+        <li>REPL commands: /stats /undo /export /model /temp /ctx</li>
+        <li>Live tokens/sec + context usage bar</li>
+        <li>Safe UTF-8 streaming (no more split multi-byte chars)</li>
+        <li>Session export to markdown</li>
+        <li>Config v2 with automatic migration</li>
+      </ul>
+    </div>
+    <div class="log-entry">
+      <span class="lv">v0.1.0</span><span class="ld">2026-07-01</span>
+      <ul>
+        <li>Initial release — chat REPL + single-shot mode</li>
+        <li>FTXUI first-run setup wizard</li>
+        <li>Cross-platform hardware detection (macOS / Linux / Windows)</li>
+        <li>TurboQuant KV cache compression</li>
+      </ul>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ═══ INSTALL ═══ -->
+<section id="install">
+  <div class="reveal">
+    <div class="kicker">get-it</div>
+    <h2>One line. That's the whole install.</h2>
+  </div>
+  <div class="reveal">
+    <div class="tabs">
+      <button class="tabbtn active" data-tab="t-curl">curl</button>
+      <button class="tabbtn" data-tab="t-src">build from source</button>
+      <button class="tabbtn" data-tab="t-req">requirements</button>
+    </div>
+    <div class="tabpanel active" id="t-curl">
+      <pre id="src-curl">curl -fsSL https://anvil-llm.github.io/install.sh | sh</pre>
+      <p class="note">Detects your OS + arch, grabs a pre-built binary, falls back to building from source. Installs to <b>/usr/local/bin</b> and creates <b>~/.anvil</b>.</p>
+    </div>
+    <div class="tabpanel" id="t-src">
+      <pre><span class="cm"># clone anvil + the TurboQuant llama.cpp fork</span>
+git clone https://github.com/anvil-llm/anvil.git
+git clone https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant.git llama-cpp
+
+<span class="cm"># build the fork</span>
+cmake -B llama-cpp/build -S llama-cpp -DCMAKE_BUILD_TYPE=Release
+cmake --build llama-cpp/build -j$(nproc)
+
+<span class="cm"># build anvil against it</span>
+cmake -B anvil/build -S anvil -Dllama_DIR=$PWD/llama-cpp/build
+cmake --build anvil/build -j$(nproc)</pre>
+    </div>
+    <div class="tabpanel" id="t-req">
+      <pre><span class="cm"># Linux</span>
+cmake ≥ 3.18 · g++ / clang++ · git
+
+<span class="cm"># macOS (Apple Silicon runs everything on Metal)</span>
+xcode-select --install · cmake · git
+
+<span class="cm"># GPU backends auto-detected:</span>
+CUDA · Vulkan · Metal · ROCm · SYCL · CPU</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ BIG CTA ═══ -->
+<section>
+  <div class="cta reveal">
+    <div class="kicker">start-forging</div>
+    <h2>Put your model <span class="hot">on the anvil.</span></h2>
+    <p>One line installs it. One command runs it. Your GPU does the rest.</p>
+    <div class="installbox">
+      <span class="dollar">$</span>
+      <code id="install-cmd2">curl -fsSL https://anvil-llm.github.io/install.sh | sh</code>
+      <button class="copybtn" data-copy="#install-cmd2">copy</button>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="foot">
+    <div class="col">
+<pre>   ░███                          ░██░██ 
+  ░██░██                            ░██ 
+ ░██  ░██  ░████████  ░██    ░██ ░██░██ 
+░█████████ ░██    ░██ ░██    ░██ ░██░██ 
+░██    ░██ ░██    ░██  ░██  ░██  ░██░██ 
+░██    ░██ ░██    ░██   ░██░██   ░██░██ 
+░██    ░██ ░██    ░██    ░███    ░██░██</pre>
+    </div>
+    <div class="col"><h4>Project</h4>
+      <a href="https://github.com/anvil-llm/anvil">GitHub</a>
+      <a href="https://github.com/anvil-llm/anvil/issues">Issues</a>
+      <a href="https://github.com/anvil-llm/anvil/releases">Releases</a>
+      <a href="#changelog">Changelog</a>
+    </div>
+    <div class="col"><h4>Built on</h4>
+      <a href="https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant">atomic-llama-cpp-turboquant</a>
+      <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
+      <a href="https://github.com/ArthurSonzogni/FTXUI">FTXUI</a>
+    </div>
+    <div class="col"><h4>Docs</h4>
+      <a href="#bench">Benchmarks</a>
+      <a href="#kv">KV cache presets</a>
+      <a href="#commands">REPL commands</a>
+      <a href="#faq">FAQ</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 Shreyan · MIT License</span>
+    <span>forged with <b>⚒</b> on the TurboQuant fork</span>
+  </div>
+</footer>
+
+<button id="totop" title="back to top">↑</button>
+
+<script>
+/* ══ embers ══ */
+(function(){
+  const cv=document.getElementById('embers'),cx=cv.getContext('2d');
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let W,H;function rs(){W=cv.width=innerWidth;H=cv.height=innerHeight}
+  rs();addEventListener('resize',rs);
+  function spawn(init){return{x:Math.random()*W,y:init?Math.random()*H:H+8,r:Math.random()*1.8+.5,
+    vy:-(Math.random()*.55+.18),vx:(Math.random()-.5)*.25,life:Math.random(),hue:18+Math.random()*26}}
+  const P=[];for(let i=0;i<65;i++)P.push(spawn(true));
+  function tick(){cx.clearRect(0,0,W,H);
+    for(let i=0;i<P.length;i++){const p=P[i];
+      p.y+=p.vy;p.x+=p.vx+Math.sin(p.y*.012)*.22;p.life-=.0016;
+      if(p.y<-10||p.life<=0)P[i]=spawn(false);
+      const a=Math.max(0,Math.min(1,p.life))*(.45+.55*Math.abs(Math.sin(p.y*.05)));
+      cx.beginPath();cx.fillStyle=`hsla(${p.hue},100%,60%,${a*.65})`;cx.arc(p.x,p.y,p.r,0,7);cx.fill();}
+    if(!reduce)requestAnimationFrame(tick);}
+  tick();
+})();
+
+/* ══ ticker ══ */
+(function(){
+  const items=['TurboQuant KV','4.2× compression','~1% quality loss','MTP speculative decoding','NextN','Flash Attention','TriAttention','CUDA','Vulkan','Metal','ROCm','CPU','GGUF','GBNF grammars','single binary','zero telemetry'];
+  const html=items.map(t=>`<span>${t}</span><b>⚒</b>`).join('');
+  document.getElementById('ticker-track').innerHTML=html+html;
+})();
+
+/* ══ hero terminal ══ */
+(function(){
+  const term=document.getElementById('term');
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const LOGO=
+`   ░███                          ░██░██ 
+  ░██░██                            ░██ 
+ ░██  ░██  ░████████  ░██    ░██ ░██░██ 
+░█████████ ░██    ░██ ░██    ░██ ░██░██ 
+░██    ░██ ░██    ░██  ░██  ░██  ░██░██ 
+░██    ░██ ░██    ░██   ░██░██   ░██░██ 
+░██    ░██ ░██    ░██    ░███    ░██░██`;
+  const STREAM="Imagine you have two magic coins. You flip one here and it lands heads — and instantly the other one, clear across the world, lands tails. They're linked, like they share one secret. That's entanglement: two particles connected so measuring one instantly tells you about the other, no matter the distance.";
+  const SEQ=[
+    {t:'cmd', s:'anvil run llama-3.1-70b.gguf --ctx 32768'},
+    {t:'out', s:'Hardware: AMD Ryzen 9 7950X | x86_64 | 64 GB RAM | 32 threads'},
+    {t:'out', s:'GPU: NVIDIA GeForce RTX 4090 (NVIDIA) 24564 MB VRAM [discrete]'},
+    {t:'out', s:'Loading model: llama-3.1-70b.gguf ...'},
+    {t:'logo'},
+    {t:'amber', s:'  model   : llama-3.1-70b.gguf'},
+    {t:'amber', s:'  backend : GPU layers=99 | flash=on | threads=32'},
+    {t:'amber', s:'  ctx     : 32768 tokens'},
+    {t:'kv',    s:'  KV      : K=turbo4 V=turbo3'},
+    {t:'prompt'},
+    {t:'cmd2',  s:'Explain quantum entanglement like I am five'},
+    {t:'stream',s:STREAM},
+    {t:'stat',  s:'  [214 tokens, 42.7 t/s, 5.0s]'},
+  ];
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  function line(cls){const d=document.createElement('div');d.className='ln '+cls;term.appendChild(d);return d}
+  async function type(el,text,speed){
+    const cur=document.createElement('span');cur.className='cursor';el.appendChild(cur);
+    for(const ch of text){cur.insertAdjacentText('beforebegin',ch);await sleep(speed)}
+    cur.remove();}
+  async function run(){
+    while(true){term.innerHTML='';
+      for(const st of SEQ){
+        if(st.t==='cmd'){const l=line('c-cmd');await type(l,'$ '+st.s,26)}
+        else if(st.t==='cmd2'){const l=line('c-prompt');l.textContent='> ';await type(l,st.s,24)}
+        else if(st.t==='logo'){const l=line('c-logo');l.textContent=LOGO;await sleep(350)}
+        else if(st.t==='prompt'){await sleep(250)}
+        else if(st.t==='stream'){const l=line('c-stream');await type(l,st.s,13)}
+        else{const map={out:'c-out',amber:'c-amber',kv:'c-kv',stat:'c-stat'};
+          const l=line(map[st.t]);l.textContent=st.s;await sleep(140)}}
+      const p=line('c-prompt');p.textContent='> ';
+      const cur=document.createElement('span');cur.className='cursor';p.appendChild(cur);
+      await sleep(3200);}}
+  if(reduce){for(const st of SEQ){
+      if(st.t==='logo')line('c-logo').textContent=LOGO;
+      else if(st.t==='cmd')line('c-cmd').textContent='$ '+st.s;
+      else if(st.t==='cmd2')line('c-prompt').textContent='> '+st.s;
+      else if(st.t==='stream')line('c-stream').textContent=st.s;
+      else if(st.t!=='prompt'){const m={out:'c-out',amber:'c-amber',kv:'c-kv',stat:'c-stat'};line(m[st.t]).textContent=st.s}}}
+  else run();
+})();
+
+/* ══ live REPL playground ══ */
+(function(){
+  const out=document.getElementById('play-out'),inp=document.getElementById('play-in');
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  let busy=false,ri=0;
+  const responses=[
+    "The KV cache stores a key and value vector for every token seen so far. TurboQuant rotates them with a Walsh–Hadamard transform, then vector-quantizes — so they take about 4x less VRAM with ~1% quality cost.",
+    "I run entirely on your machine. No API keys, no network, no telemetry — just weights on your GPU and a hammer.",
+    "Try /stats to see tokens per second, or /ctx to check how full the context window is. Everything stays local."
+  ];
+  function line(cls,txt){const d=document.createElement('div');d.className='pl '+cls;d.textContent=txt;out.appendChild(d);out.scrollTop=out.scrollHeight;return d}
+  async function type(el,txt,sp){if(reduce){el.textContent=txt;return}
+    for(const ch of txt){el.textContent+=ch;out.scrollTop=out.scrollHeight;await sleep(sp)}}
+  async function boot(){out.innerHTML='';
+    line('pl-out','Hardware: Apple M2 Max | aarch64 | 64 GB RAM | 12 threads');
+    line('pl-out','GPU: Apple GPU (unified 64 GB)');
+    line('pl-logo','   ⚒ anvil v0.2.0 — type "help" to begin');
+    line('pl-kv','  KV : K=turbo4 V=turbo3   ctx : 32768 tokens')}
+  async function handle(raw){
+    const c=raw.trim();if(!c)return;
+    line('pl-cmd','> '+c);
+    if(c==='help'){line('pl-out','  anvil run <model>    load a model');
+      line('pl-out','  /stats  /model  /ctx session info');
+      line('pl-out','  /temp 0.9            retune sampling');
+      line('pl-out','  /clear               quench the context');
+      line('pl-out','  anything else        chat with the forge');return}
+    if(c==='/clear'){out.innerHTML='';line('pl-out','Chat cleared.');return}
+    if(c==='/stats'){line('pl-out','  tokens generated: 1,204');line('pl-out','  avg speed       : 38.2 t/s');
+      line('pl-out','  ctx used        : 8,412 / 32768 (25.7%)');line('pl-out','  KV cache        : K=turbo4 V=turbo3');return}
+    if(c==='/model'){line('pl-out','  arch       : llama');line('pl-out','  trained ctx: 131072');line('pl-out','  ngl        : 99');return}
+    if(c==='/ctx'){line('pl-ctx','  ctx [███████░░░░░░░░░░░░░░░░░░░░░] 26% (8412/32768)');return}
+    if(c.startsWith('/temp')){line('pl-out','Temperature set to '+(c.split(' ')[1]||'0.8'));return}
+    if(c.startsWith('anvil run')){await boot();return}
+    const r=responses[ri++%responses.length];
+    const el=line('pl-stream','');await type(el,r,14);
+    line('pl-stat','  ['+Math.max(1,Math.ceil(r.length/4))+' tokens, 38.2 t/s]');}
+  inp.addEventListener('keydown',async e=>{
+    if(e.key!=='Enter'||busy)return;
+    busy=true;const v=inp.value;inp.value='';await handle(v);busy=false;inp.focus();});
+  document.getElementById('play-term').addEventListener('click',()=>inp.focus());
+  boot();
+})();
+
+/* ══ KV playground ══ */
+(function(){
+  const PRESETS=[
+    {nm:'No Compress',  ds:'K=f16 · V=f16',       gb:20.0,x:'1.0×',loss:'baseline',pct:100,col:'#ff5c3d'},
+    {nm:'Quality+',     ds:'K=q8_0 · V=turbo3',   gb:6.7, x:'~3×', loss:'<1%',     pct:33, col:'#ffc46b'},
+    {nm:'Recommended',  ds:'K=turbo4 · V=turbo3', gb:4.8, x:'4.2×',loss:'~1%',     pct:24, col:'#5df0a2'},
+    {nm:'Max Compress', ds:'K=turbo4 · V=turbo2', gb:3.3, x:'6.1×',loss:'~3%',     pct:16, col:'#ff9d2e'},
+  ];
+  const wrap=document.getElementById('kv-presets');
+  const fill=document.getElementById('kv-fill');
+  const elGb=document.getElementById('kv-gb'),elX=document.getElementById('kv-x'),elLoss=document.getElementById('kv-loss');
+  let cur=-1;
+  function countTo(el,val,suffix){
+    const from=parseFloat(el.dataset.v||val),t0=performance.now(),dur=500;el.dataset.v=val;
+    function step(t){const k=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k,3);
+      el.textContent=(from+(val-from)*e).toFixed(1)+suffix;if(k<1)requestAnimationFrame(step)}
+    requestAnimationFrame(step);}
+  function select(i){if(i===cur)return;cur=i;const p=PRESETS[i];
+    [...wrap.children].forEach((b,j)=>b.classList.toggle('active',j===i));
+    fill.style.width=p.pct+'%';
+    fill.style.background=`linear-gradient(90deg,#ff6a00,${p.col})`;
+    fill.style.boxShadow=`0 0 22px ${p.col}88`;
+    countTo(elGb,p.gb,' GB');elX.textContent=p.x;elLoss.textContent=p.loss;elGb.style.color=p.col;}
+  PRESETS.forEach((p,i)=>{const b=document.createElement('button');b.className='kv-btn';
+    b.innerHTML=`<span class="nm">${p.nm}</span><span class="ds">${p.ds} · ${p.x} · ${p.loss} loss</span>`;
+    b.addEventListener('click',()=>select(i));wrap.appendChild(b);});
+  select(2);
+})();
+
+/* ══ VRAM calculator ══ */
+(function(){
+  const M={'7B':{p:7e9,el:262144},'13B':{p:13e9,el:409600},'34B':{p:34e9,el:98304},'70B':{p:70e9,el:163840}};
+  const WQ={f16:2,q8_0:1,q4_K:0.55,q2_K:0.3};
+  const KV={'f16/f16':2,'q8_0/turbo3':0.6875,'turbo4/turbo3':0.4375,'turbo4/turbo2':0.375};
+  const GPUS=[8,12,16,24,48,80];
+  const ms=document.getElementById('c-model'),wq=document.getElementById('c-wq'),
+        kv=document.getElementById('c-kv'),cx=document.getElementById('c-ctx'),cxv=document.getElementById('c-ctxv');
+  const fit=document.getElementById('gpu-fit');
+  GPUS.forEach(g=>{const d=document.createElement('div');d.className='gpu-chip';d.dataset.gb=g;d.textContent=g+' GB';fit.appendChild(d)});
+  const f=gb=>gb>=100?gb.toFixed(0):gb>=10?gb.toFixed(1):gb.toFixed(2);
+  function calc(){
+    const m=M[ms.value],ctxN=+cx.value;
+    cxv.textContent=(ctxN/1024)+'K';
+    const wGB=m.p*WQ[wq.value]/1e9;
+    const kGB=m.el*KV[kv.value]*ctxN/1e9;
+    const tot=wGB+kGB;
+    document.getElementById('cn-w').textContent=f(wGB)+' GB';
+    document.getElementById('cn-kv').textContent=f(kGB)+' GB';
+    document.getElementById('cn-tot').textContent=f(tot)+' GB';
+    const scale=Math.max(tot*1.15,10);
+    document.getElementById('sb-w').style.width=(wGB/scale*100)+'%';
+    document.getElementById('sb-k').style.width=(kGB/scale*100)+'%';
+    [...fit.children].forEach(ch=>{
+      const ok=tot<=+ch.dataset.gb;
+      ch.classList.toggle('ok',ok);ch.classList.toggle('no',!ok);
+      ch.textContent=ch.dataset.gb+' GB '+(ok?'✓':'✗');});}
+  [ms,wq,kv,cx].forEach(el=>el.addEventListener('input',calc));
+  calc();
+})();
+
+/* ══ benchmark bars on scroll ══ */
+(function(){
+  const io=new IntersectionObserver(es=>{es.forEach(e=>{
+    if(e.isIntersecting){e.target.querySelectorAll('.bar i').forEach(b=>{b.style.width=b.dataset.w+'%'});io.unobserve(e.target)}})},{threshold:.3});
+  document.querySelectorAll('.bench').forEach(el=>io.observe(el));
+})();
+
+/* ══ speculative decoding ══ */
+(function(){
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const line=document.getElementById('tokline'),meter=document.getElementById('spec-meter');
+  const words=['The','cat','sat','on','the','hot','anvil','and','glowed'];
+  const N=9;
+  for(let i=0;i<N;i++){const d=document.createElement('div');d.className='tok';d.textContent=words[i%words.length];line.appendChild(d)}
+  const toks=[...line.children];
+  if(reduce){toks.forEach(t=>t.classList.add('hit'));return}
+  let pos=0;
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  async function step(){
+    while(true){
+      toks.forEach(t=>{t.className='tok'});
+      toks[pos%N].classList.add('base');await sleep(400);
+      const drafts=[];
+      for(let k=1;k<=3;k++){const t=toks[(pos+k)%N];t.classList.add('draft');drafts.push(t);await sleep(260)}
+      await sleep(300);
+      toks[pos%N].classList.add('hit');
+      drafts.forEach(t=>{t.classList.remove('draft');t.classList.add('hit')});
+      meter.textContent='+4 tokens / 1 step';
+      pos=(pos+4)%N;
+      await sleep(900);}}
+  step();
+})();
+
+/* ══ FAQ accordion ══ */
+document.querySelectorAll('.qa button').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const qa=btn.parentElement,ans=qa.querySelector('.a');
+    const open=qa.classList.contains('open');
+    document.querySelectorAll('.qa').forEach(q=>{q.classList.remove('open');q.querySelector('.a').style.maxHeight=null});
+    if(!open){qa.classList.add('open');ans.style.maxHeight=ans.scrollHeight+'px'}});
+});
+
+/* ══ install tabs ══ */
+document.querySelectorAll('.tabbtn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');});
+});
+
+/* ══ copy ══ */
+document.querySelectorAll('.copybtn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent);
+    btn.textContent='copied ✓';btn.classList.add('done');
+    setTimeout(()=>{btn.textContent='copy';btn.classList.remove('done')},1600);});
+});
+
+/* ══ progress + back to top ══ */
+(function(){
+  const prog=document.getElementById('progress'),totop=document.getElementById('totop');
+  addEventListener('scroll',()=>{
+    const h=document.documentElement;
+    prog.style.width=(h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+'%';
+    totop.classList.toggle('show',h.scrollTop>600);},{passive:true});
+  totop.addEventListener('click',()=>scrollTo({top:0,behavior:'smooth'}));
+})();
+
+/* ══ reveal ══ */
+(function(){
+  const io=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.1});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>
