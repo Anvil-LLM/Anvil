@@ -42,7 +42,14 @@ set(FTXUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
 
 # ── anvil ──
-add_executable(anvil src/anvil.cpp)
+add_executable(anvil
+    src/anvil.cpp
+    src/hardware.cpp
+    src/config.cpp
+    src/cli.cpp
+    src/tui.cpp
+    src/session.cpp
+)
 
 target_include_directories(anvil PRIVATE
     ${LLAMA_DIR}/include
