@@ -29,15 +29,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ git libvulkan-dev
-          if [[ "${{ matrix.flags }}" == *VULKAN* ]]; then
-            sudo apt-get install -y glslc
-          fi
+          sudo apt-get install -y cmake g++ git \
+            libvulkan-dev vulkan-headers \
+            glslc glslang-dev glslang-tools \
+            spirv-headers spirv-tools libspirv-tools-dev
 
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
