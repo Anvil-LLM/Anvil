@@ -352,7 +352,9 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
     <a href="#try">Try it</a>
     <a href="#bench">Benchmarks</a>
     <a href="#kv">KV Cache</a>
+    <a href="#turboquant">TurboQuant</a>
     <a href="#calc">VRAM</a>
+    <a href="#tuning">Tuning</a>
     <a href="#compare">Compare</a>
     <a href="#faq">FAQ</a>
     <a href="#install">Install</a>
@@ -469,7 +471,7 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
   <div class="kv-wrap reveal">
     <div class="kv-presets" id="kv-presets"></div>
     <div class="kv-viz">
-      <div class="kv-cap">KV cache footprint · <b>Qwen 3.6 27B</b> · 262K context</div>
+      <div class="kv-cap">KV cache footprint · <b>Qwen 3.6 27B</b> · 128K context</div>
       <div class="gauge"><div class="fill" id="kv-fill"></div></div>
       <div class="gauge-scale"><span>0 GB</span><span>5 GB</span><span>10 GB</span><span>15 GB</span><span>20 GB</span></div>
       <div class="kv-stats">
@@ -478,6 +480,34 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
         <div class="kv-stat"><div class="v" id="kv-loss">~1%</div><div class="k">quality loss</div></div>
       </div>
     </div>
+  </div>
+</section>
+<div class="divider"></div>
+<section id="turboquant">
+  <div class="reveal">
+    <div class="kicker">quantize</div>
+    <h2>Why TurboQuant wins.</h2>
+    <p class="sub">Most KV quantizers just round the key and value tensors. TurboQuant first <b>rotates them into a Walsh–Hadamard basis</b>, where the energy is spread evenly across every dimension. Then it vector-quantizes. The result keeps the signal while throwing away far less information.</p>
+  </div>
+  <div class="reveal" style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:40px">
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--amber);margin-bottom:10px">01 · Rotate</div>
+      <p style="color:var(--muted);font-size:13px">Apply a fast WHT to each KV vector. Rotation removes correlation bias so every component carries similar importance.</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--amber);margin-bottom:10px">02 · Quantize</div>
+      <p style="color:var(--muted);font-size:13px">Vector-quantize in the rotated space. K stays at a coarser grain, V gets the aggressive treatment because the eye tolerates value noise.</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--amber);margin-bottom:10px">03 · Reconstruct</div>
+      <p style="color:var(--muted);font-size:13px">Inverse WHT reconstructs the original basis. Perplexity shifts by ~1% while the cache shrinks by 4×.</p>
+    </div>
+  </div>
+  <div class="reveal" style="margin-top:40px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px 32px">
+    <div style="font-family:var(--disp);font-size:16px;color:var(--pale);margin-bottom:14px">The memory equation</div>
+    <p style="color:var(--muted);font-size:13.5px;margin-bottom:16px">For a model with <b>L</b> layers, hidden size <b>H</b>, and GQA grouping <b>g</b>, the f16 KV cache per token is:</p>
+    <pre style="color:var(--green);font-size:13px;background:#0e0a05;border:1px solid var(--line2);border-radius:6px;padding:14px 18px;overflow-x:auto">KV(token) = 2 × L × H × (kv_heads / heads) × 2 bytes</pre>
+    <p style="color:var(--muted);font-size:13.5px;margin-top:16px">With TurboQuant the final 2 bytes becomes ~0.44 bytes, which is where the 4.2× compression comes from. The calculator above uses the same geometry.</p>
   </div>
 </section>
 <div class="divider"></div>
@@ -494,7 +524,7 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
         <option value="7B">7B&nbsp;&nbsp;(32 layers · MHA)</option>
         <option value="13B">13B&nbsp;(40 layers · MHA)</option>
         <option value="34B">34B&nbsp;(48 layers · GQA)</option>
-        <option value="70B" selected>70B&nbsp;(80 layers · GQA)</option>
+        <option value="27B" selected>27B&nbsp;(64 layers · GQA)</option>
       </select>
       <label>Weight quantization</label>
       <select id="c-wq">
@@ -523,8 +553,41 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
       </div>
       <label style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);display:block;margin-bottom:12px">Does it fit?</label>
       <div class="gpu-fit" id="gpu-fit"></div>
-      <p class="calc-note">Rule of thumb — leave ~1–2 GB headroom for activations. GQA models (34B/70B) have much smaller KV caches than MHA ones.</p>
+      <p class="calc-note">Rule of thumb — leave ~1–2 GB headroom for activations. GQA models (27B/34B) have much smaller KV caches than MHA ones.</p>
     </div>
+  </div>
+</section>
+<div class="divider"></div>
+<section id="tuning">
+  <div class="reveal">
+    <div class="kicker">tune</div>
+    <h2>Squeeze the last token per second.</h2>
+    <p class="sub">VRAM is only half the battle. These are the knobs that actually move tokens-per-second once the model already fits.</p>
+  </div>
+  <div class="reveal" style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:40px">
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--green);margin-bottom:10px">Flash Attention</div>
+      <p style="color:var(--muted);font-size:13px">Always enable it. Flash Attention keeps the attention step memory-bound instead of compute-bound, and the larger your context the bigger the win.</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--green);margin-bottom:10px">GPU Layers</div>
+      <p style="color:var(--muted);font-size:13px">Use <b>--ngl</b> to offload every layer that fits. Even one layer left on CPU creates a cross-bus bottleneck. The TUI shows the safe maximum.</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--green);margin-bottom:10px">Context Right-Sizing</div>
+      <p style="color:var(--muted);font-size:13px">Don't pay for context you don't use. A 27B model at 32K needs half the KV cache of 64K, so size the window to the actual prompt.</p>
+    </div>
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px">
+      <div style="font-family:var(--disp);font-size:15px;color:var(--green);margin-bottom:10px">Speculative Decoding</div>
+      <p style="color:var(--muted);font-size:13px">MTP / NextN draft heads verify several tokens in parallel. Turn it on for supported models and watch latency drop 30–50%.</p>
+    </div>
+  </div>
+  <div class="reveal" style="margin-top:40px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px 32px">
+    <div style="font-family:var(--disp);font-size:16px;color:var(--pale);margin-bottom:14px">Benchmark your own workload</div>
+    <p style="color:var(--muted);font-size:13.5px;margin-bottom:12px">Synthetic benches only tell you so much. Run your actual prompt through <b>anvil</b> and watch <b>/stats</b> for tokens-per-second and prompt-processing time. Then iterate on KV preset and context size until the numbers stop improving.</p>
+    <pre style="color:var(--green);font-size:13px;background:#0e0a05;border:1px solid var(--line2);border-radius:6px;padding:14px 18px;overflow-x:auto">$ anvil run qwen3.6-27b.gguf --ctx 32768 --ngl 99 --flash-attn
+&gt; /stats
+tokens/sec: 127.4 · prompt tokens: 842 · total tokens: 4 891</pre>
   </div>
 </section>
 <div class="divider"></div>
@@ -737,7 +800,7 @@ footer{border-top:1px solid var(--line);background:var(--bg2);padding:56px 32px 
   <span class="k">"triattn"</span>:    <span class="b">false</span>,          <span class="cm">// KV eviction</span>
   <span class="k">"type_k"</span>:     <span class="s">"turbo4"</span>,       <span class="cm">// K cache</span>
   <span class="k">"type_v"</span>:     <span class="s">"turbo3"</span>,       <span class="cm">// V cache</span>
-  <span class="k">"model"</span>:      <span class="s">"llama-3.1.gguf"</span>
+  <span class="k">"model"</span>:      <span class="s">"qwen3.6-27b.gguf"</span>
 }</div>
     <ul class="cfg-notes">
       <li><b>Versioned &amp; migrated</b>Older configs are upgraded automatically — nothing breaks on update.</li>
@@ -988,12 +1051,12 @@ CUDA · Vulkan · Metal · ROCm · SYCL · CPU</pre>
 ░██    ░██ ░██    ░██    ░███    ░██░██`;
   const STREAM="Imagine you have two magic coins. You flip one here and it lands heads — and instantly the other one, clear across the world, lands tails. They're linked, like they share one secret. That's entanglement: two particles connected so measuring one instantly tells you about the other, no matter the distance.";
   const SEQ=[
-    {t:'cmd', s:'anvil run llama-3.1-70b.gguf --ctx 32768'},
+    {t:'cmd', s:'anvil run qwen3.6-27b.gguf --ctx 32768'},
     {t:'out', s:'Hardware: AMD Ryzen 9 7950X | x86_64 | 64 GB RAM | 32 threads'},
     {t:'out', s:'GPU: NVIDIA GeForce RTX 4090 (NVIDIA) 24564 MB VRAM [discrete]'},
-    {t:'out', s:'Loading model: llama-3.1-70b.gguf ...'},
+    {t:'out', s:'Loading model: qwen3.6-27b.gguf ...'},
     {t:'logo'},
-    {t:'amber', s:'  model   : llama-3.1-70b.gguf'},
+    {t:'amber', s:'  model   : qwen3.6-27b.gguf'},
     {t:'amber', s:'  backend : GPU layers=99 | flash=on | threads=32'},
     {t:'amber', s:'  ctx     : 32768 tokens'},
     {t:'kv',    s:'  KV      : K=turbo4 V=turbo3'},
@@ -1105,8 +1168,22 @@ CUDA · Vulkan · Metal · ROCm · SYCL · CPU</pre>
 
 /* ══ VRAM calculator ══ */
 (function(){
-  const M={'7B':{p:7e9,el:262144},'13B':{p:13e9,el:409600},'34B':{p:34e9,el:98304},'70B':{p:70e9,el:163840}};
+  /*
+    VRAM estimator based on standard llama.cpp KV-cache geometry.
+    weights_GB  = params * bytes_per_param / 1e9
+    kv_bytes_per_token = 2 * layers * hidden_size * (kv_heads / heads) * kv_bytes_per_element
+    kv_GB = kv_bytes_per_token * context_tokens / 1e9
+    The KV map stores the average bytes per element for the chosen (K-type / V-type) pair.
+  */
+  const M={
+    '7B':  {p:7e9, l:32, h:4096, heads:32, kv_heads:32},
+    '13B': {p:13e9,l:40, h:5120, heads:40, kv_heads:40},
+    '34B': {p:34e9,l:48, h:8192, heads:64, kv_heads:8},
+    '27B': {p:27e9,l:64, h:5120, heads:32, kv_heads:4}
+  };
   const WQ={f16:2,q8_0:1,q4_K:0.55,q2_K:0.3};
+  // KV bytes per element is the average of K and V: e.g. q8_0/turbo3 = (1.0 + 0.375)/2 = 0.6875.
+  // f16=2.0B, q8_0=1.0B, turbo4=0.5B, turbo3=0.375B, turbo2=0.25B.
   const KV={'f16/f16':2,'q8_0/turbo3':0.6875,'turbo4/turbo3':0.4375,'turbo4/turbo2':0.375};
   const GPUS=[8,12,16,24,48,80];
   const ms=document.getElementById('c-model'),wq=document.getElementById('c-wq'),
@@ -1118,7 +1195,9 @@ CUDA · Vulkan · Metal · ROCm · SYCL · CPU</pre>
     const m=M[ms.value],ctxN=+cx.value;
     cxv.textContent=(ctxN/1024)+'K';
     const wGB=m.p*WQ[wq.value]/1e9;
-    const kGB=m.el*KV[kv.value]*ctxN/1e9;
+    // Per-token KV elements for f16, then scaled by the chosen KV pair's bytes-per-element.
+    const el=2*m.l*m.h*(m.kv_heads/m.heads);
+    const kGB=el*KV[kv.value]*ctxN/1e9;
     const tot=wGB+kGB;
     document.getElementById('cn-w').textContent=f(wGB)+' GB';
     document.getElementById('cn-kv').textContent=f(kGB)+' GB';
