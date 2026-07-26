@@ -12,7 +12,7 @@ Anvil is a terminal-first local LLM tool that runs natively. One files, One bina
 | Status Quo | Anvil |
 |---|---|
 | Opaque blob storage | Models are plain GGUF files in `~/.anvil/models/` |
-| Proprietary API | Drop-in OpenAI-compatible API, in-process |
+| Proprietary API | Drop-in OpenAI-compatible API, in-process (roadmap) |
 | Always-on daemon | Zero idle overhead; the binary runs when you tell it to |
 | Slow, unoptimized defaults | Hardware probe + auto-optimization on first run |
 | Hard to configure | `anvil run llama3` — it just works at max speed |
@@ -29,9 +29,10 @@ curl -sSL https://raw.githubusercontent.com/gondaliyashreyan1/Anvil/main/install
 Or build from source:
 
 ```bash
-git clone https://github.com/gondaliyashreyan1/Anvil
-cd Anvil
-cargo build --release
+git clone --recursive https://github.com/anvil-llm/anvil
+cd anvil
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
 ---
@@ -61,21 +62,13 @@ anvil run mymodel.gguf \
   --ngl 99
 ```
 
-### Serve an API
-
-```bash
-anvil serve
-# OpenAI-compatible API on localhost:11434
-# In-process. No subprocess. No serialization.
-```
-
 ---
 
 ## Why Anvil?
 
 - **In-process by default.** Inference runs natively via C++ compiled binary. No HTTP roundtrip, no JSON per token, no subprocess overhead.
 - **Zero jank.** 60 fps TUI. <2s startup. Background threads sleep when idle.
-- **Everything is opt-in.** The core engine is the only thing that ships by default. TUI, API server, cloud proxy, finetuning — enabled and loaded only when you choose.
+- **Everything is opt-in.** The core engine is the only thing that ships by default. Extras — API server, cloud proxy, finetuning — will be enabled and loaded only when you choose.
 - **One binary.** Download `anvil` or run the curl installer. It just works. No extra files, no tracking, no telemetry.
 - **Hardware-adaptive.** Auto-detects your CPU, GPU, RAM, and picks the fastest backend and settings. Zero config.
 - **Transparent.** Plain GGUF models. Plain JSON config. Plain text logs. No hidden magic.
@@ -84,17 +77,30 @@ anvil serve
 
 ## Architecture
 
-Anvil compiles `llama.cpp` as a static library and links it directly into a single Rust binary.
+Anvil compiles a custom `llama.cpp` fork as a static library and links it directly into a single C++ binary.
 
 | Layer | Implementation |
 |---|---|
-| **Engine** | `llama.cpp` (TurboQuant, speculative decoding, Metal/CUDA/Vulkan/CPU) |
+| **Engine** | `llama.cpp` fork with TurboQuant KV-cache types |
 | **Interface** | Direct C++ `llama.h` (pure C API). Zero serialization overhead. |
-| **Orchestrator** | Rust: model lifecycle, inference loop, hardware probing, configuration |
-| **TUI** | `ratatui` — multi-pane chat, monitoring, real-time stats |
-| **API** | `axum` — OpenAI-compatible HTTP, in-process routing |
-| **Cloud** | Optional feature-gated proxy (OpenAI, Anthropic, Gemini) |
-| **Finetune** | Optional feature-gated training pipeline |
+| **TUI** | `FTXUI` — first-time setup wizard and chat REPL |
+
+## Status
+
+Currently implemented:
+
+- `anvil run <model.gguf>` — interactive REPL and single-shot generation.
+- First-time hardware-probing setup TUI.
+- KV-cache compression presets, flash attention, MTP.
+- Session export and basic REPL commands.
+
+Not yet implemented (roadmap):
+
+- `anvil serve` / OpenAI-compatible API
+- Monitoring dashboard
+- Cloud proxy
+- Finetuning
+- Self-updater
 
 ---
 
@@ -105,7 +111,8 @@ Anvil compiles `llama.cpp` as a static library and links it directly into a sing
 | Core in-process inference | ✅ |
 | TurboQuant | ✅ |
 | Metal / CUDA / Vulkan / CPU backends | ✅ |
-| Speculative decoding (MTP/NextN) | ✅ |
+| Session export | ✅ |
+| Speculative decoding (MTP/NextN) | 🛠️ |
 | TUI chat (`anvil run`) | ✅ |
 | Monitoring dashboard | 🛠️ |
 | OpenAI API server (`anvil serve`) | 🛠️ |

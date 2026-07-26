@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -57,10 +58,94 @@ static const char * ANVIL_VERSION = "0.2.0";
 static const int  CONFIG_VERSION  = 2;
 static std::atomic<bool> g_interrupted{false};
 static void signal_handler(int) {
-    if (g_interrupted.load()) {
-        _exit(130);
-    }
     g_interrupted.store(true);
+}
+
+// RAII wrappers for llama objects
+struct LlamaModel {
+    llama_model* p = nullptr;
+    explicit LlamaModel(llama_model* p_ = nullptr) : p(p_) {}
+    ~LlamaModel() { if (p) llama_model_free(p); }
+    LlamaModel(const LlamaModel&) = delete;
+    LlamaModel& operator=(const LlamaModel&) = delete;
+    LlamaModel(LlamaModel&& o) noexcept : p(o.p) { o.p = nullptr; }
+    LlamaModel& operator=(LlamaModel&& o) noexcept {
+        if (this != &o) { if (p) llama_model_free(p); p = o.p; o.p = nullptr; }
+        return *this;
+    }
+    llama_model* get() const { return p; }
+    operator llama_model*() const { return p; }
+    explicit operator bool() const { return p != nullptr; }
+};
+
+struct LlamaContext {
+    llama_context* p = nullptr;
+    explicit LlamaContext(llama_context* p_ = nullptr) : p(p_) {}
+    ~LlamaContext() { if (p) llama_free(p); }
+    LlamaContext(const LlamaContext&) = delete;
+    LlamaContext& operator=(const LlamaContext&) = delete;
+    LlamaContext(LlamaContext&& o) noexcept : p(o.p) { o.p = nullptr; }
+    LlamaContext& operator=(LlamaContext&& o) noexcept {
+        if (this != &o) { if (p) llama_free(p); p = o.p; o.p = nullptr; }
+        return *this;
+    }
+    llama_context* get() const { return p; }
+    operator llama_context*() const { return p; }
+    explicit operator bool() const { return p != nullptr; }
+};
+
+struct LlamaSampler {
+    llama_sampler* p = nullptr;
+    explicit LlamaSampler(llama_sampler* p_ = nullptr) : p(p_) {}
+    ~LlamaSampler() { if (p) llama_sampler_free(p); }
+    LlamaSampler(const LlamaSampler&) = delete;
+    LlamaSampler& operator=(const LlamaSampler&) = delete;
+    LlamaSampler(LlamaSampler&& o) noexcept : p(o.p) { o.p = nullptr; }
+    LlamaSampler& operator=(LlamaSampler&& o) noexcept {
+        if (this != &o) { if (p) llama_sampler_free(p); p = o.p; o.p = nullptr; }
+        return *this;
+    }
+    void reset(llama_sampler* p_) { if (p) llama_sampler_free(p); p = p_; }
+    llama_sampler* get() const { return p; }
+    operator llama_sampler*() const { return p; }
+    explicit operator bool() const { return p != nullptr; }
+};
+
+// Safe numeric parsing helpers
+static bool parse_int(const std::string& s, int& out) {
+    try {
+        if (s.empty()) return false;
+        size_t idx = 0;
+        out = std::stoi(s, &idx);
+        if (idx != s.size()) return false;
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_float(const std::string& s, float& out) {
+    try {
+        if (s.empty()) return false;
+        size_t idx = 0;
+        out = std::stof(s, &idx);
+        if (idx != s.size()) return false;
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_uint64(const std::string& s, uint64_t& out) {
+    try {
+        if (s.empty()) return false;
+        size_t idx = 0;
+        out = std::stoull(s, &idx);
+        if (idx != s.size()) return false;
+    } catch (...) {
+        return false;
+    }
+    return true;
 }
 struct KVTypeOption {
     const char * label;
@@ -165,7 +250,10 @@ static void detect_gpus_linux(HWInfo & hw) {
                 if (comma != std::string::npos) {
                     gpu.name = line.substr(0, comma);
                     while (!gpu.name.empty() && gpu.name.back() == ' ') gpu.name.pop_back();
-                    gpu.vram_mb = std::stoull(line.substr(comma + 1));
+                    std::string vram_str = line.substr(comma + 1);
+                    while (!vram_str.empty() && vram_str.back() <= ' ') vram_str.pop_back();
+                    uint64_t vram = 0;
+                    if (parse_uint64(vram_str, vram)) gpu.vram_mb = vram;
                 } else {
                     gpu.name = line;
                 }
@@ -221,9 +309,16 @@ static void detect_gpus_windows(HWInfo & hw) {
         DXGI_ADAPTER_DESC desc;
         if (adapter->GetDesc(&desc) == S_OK) {
             GPUInfo gpu;
-            char name_buf[256];
-            wcstombs(name_buf, desc.Description, sizeof(name_buf));
-            gpu.name = name_buf;
+            int needed = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+            if (needed > 0) {
+                std::string name_buf(needed, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name_buf.data(), needed, nullptr, nullptr);
+                // remove null terminator included by WideCharToMultiByte
+                if (!name_buf.empty() && name_buf.back() == '\0') name_buf.pop_back();
+                gpu.name = std::move(name_buf);
+            } else {
+                gpu.name = "Unknown";
+            }
             gpu.vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
             gpu.is_discrete = (desc.VendorId == 0x10DE);
             if (desc.VendorId == 0x10DE)      gpu.vendor = "NVIDIA";
@@ -413,15 +508,15 @@ static AnvilConfig load_config() {
     if (!f) return cfg;
     std::string json((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     auto s = json_get(json, "version");
-    if (!s.empty()) cfg.version = std::stoi(s);
+    if (!s.empty()) parse_int(s, cfg.version);
     s = json_get(json, "ngl");
-    if (!s.empty()) cfg.ngl = std::stoi(s);
+    if (!s.empty()) parse_int(s, cfg.ngl);
     s = json_get(json, "n_ctx");
-    if (!s.empty()) cfg.n_ctx = std::stoi(s);
+    if (!s.empty()) parse_int(s, cfg.n_ctx);
     s = json_get(json, "n_threads");
-    if (!s.empty()) cfg.n_threads = std::stoi(s);
+    if (!s.empty()) parse_int(s, cfg.n_threads);
     s = json_get(json, "temp");
-    if (!s.empty()) cfg.temp = std::stof(s);
+    if (!s.empty()) parse_float(s, cfg.temp);
     s = json_get(json, "flash_attn");
     if (!s.empty()) cfg.flash_attn = (s == "true");
     s = json_get(json, "mtp");
@@ -462,6 +557,7 @@ struct CliArgs {
     bool  mtp           = false;
     bool  triattn       = false;
     bool  help          = false;
+    bool  invalid       = false;
     bool  version       = false;
     std::string type_k;
     std::string type_v;
@@ -512,10 +608,10 @@ static CliArgs parse_args(int argc, char ** argv) {
         std::string arg = argv[i];
         if      (arg == "--help" || arg == "-h")                          { a.help = true; }
         else if (arg == "--version")                                      { a.version = true; }
-        else if ((arg == "-c" || arg == "--ctx") && i+1 < argc)           { a.n_ctx = std::stoi(argv[++i]); }
-        else if ((arg == "-ngl" || arg == "--ngl" || arg == "--n-gpu-layers") && i+1 < argc) { a.ngl = std::stoi(argv[++i]); }
-        else if ((arg == "-t" || arg == "--temp") && i+1 < argc)          { a.temp = std::stof(argv[++i]); }
-        else if (arg == "--threads" && i+1 < argc)                        { a.n_threads = std::stoi(argv[++i]); }
+        else if ((arg == "-c" || arg == "--ctx") && i+1 < argc)           { if (!parse_int(argv[++i], a.n_ctx)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
+        else if ((arg == "-ngl" || arg == "--ngl" || arg == "--n-gpu-layers") && i+1 < argc) { if (!parse_int(argv[++i], a.ngl)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
+        else if ((arg == "-t" || arg == "--temp") && i+1 < argc)          { if (!parse_float(argv[++i], a.temp)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
+        else if (arg == "--threads" && i+1 < argc)                        { if (!parse_int(argv[++i], a.n_threads)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
         else if (arg == "--flash-attn")                                   { a.flash_attn = true; }
         else if (arg == "--no-flash-attn")                                { a.no_flash_attn = true; a.flash_attn = false; }
         else if (arg == "--type-k" && i+1 < argc)                         { a.type_k = argv[++i]; }
@@ -525,9 +621,9 @@ static CliArgs parse_args(int argc, char ** argv) {
         else if (arg == "--grammar" && i+1 < argc)                        { a.grammar = argv[++i]; }
         else if ((arg == "-s" || arg == "--system") && i+1 < argc)        { a.system_prompt = argv[++i]; }
         else if ((arg == "-p" || arg == "--prompt") && i+1 < argc)        { a.prompt = argv[++i]; }
-        else if ((arg == "-n" || arg == "--max-tokens") && i+1 < argc)    { a.max_tokens = std::stoi(argv[++i]); }
+        else if ((arg == "-n" || arg == "--max-tokens") && i+1 < argc)    { if (!parse_int(argv[++i], a.max_tokens)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
         else if (arg[0] != '-')                                           { a.model = arg; }
-        else { fprintf(stderr, "Unknown option: %s\n", arg.c_str()); a.help = true; }
+        else { fprintf(stderr, "Unknown option: %s\n", arg.c_str()); a.invalid = true; a.help = true; }
     }
     return a;
 }
@@ -562,6 +658,31 @@ struct Utf8Buffer {
 struct ChatMessage {
     std::string role;
     std::string content;
+};
+
+// RAII owner for llama_chat_message C-strings
+struct ChatMessages {
+    std::vector<llama_chat_message> m;
+    ~ChatMessages() { clear(); }
+    ChatMessages() = default;
+    ChatMessages(const ChatMessages&) = delete;
+    ChatMessages& operator=(const ChatMessages&) = delete;
+    ChatMessages(ChatMessages&&) = default;
+    ChatMessages& operator=(ChatMessages&&) = default;
+    void clear() {
+        for (auto& x : m) free(const_cast<char*>(x.content));
+        m.clear();
+    }
+    void push_back(llama_chat_message msg) { m.push_back(msg); }
+    void pop_back() {
+        if (!m.empty()) { free(const_cast<char*>(m.back().content)); m.pop_back(); }
+    }
+    llama_chat_message* data() { return m.data(); }
+    const llama_chat_message* data() const { return m.data(); }
+    size_t size() const { return m.size(); }
+    bool empty() const { return m.empty(); }
+    llama_chat_message& back() { return m.back(); }
+    const llama_chat_message& back() const { return m.back(); }
 };
 static std::string session_path() {
     namespace fs = std::filesystem;
@@ -736,7 +857,10 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
         fflush(stdout);
         std::string input;
         std::getline(std::cin, input);
-        cfg.n_ctx = std::stoi(input);
+        if (!parse_int(input, cfg.n_ctx) || cfg.n_ctx <= 0) {
+            fprintf(stderr, "\033[33mwarning: invalid context size '%s', using default 8192\033[0m\n", input.c_str());
+            cfg.n_ctx = 8192;
+        }
     } else {
         cfg.n_ctx = ctx_options[ctx_sel];
     }
@@ -758,6 +882,10 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
 static bool validate_gguf(const std::string & path) {
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 16) { fclose(f); return false; }
     char magic[4];
     bool ok = (fread(magic, 1, 4, f) == 4 && memcmp(magic, "GGUF", 4) == 0);
     fclose(f);
@@ -799,7 +927,7 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     mparams.use_mmap = true;
     fprintf(stderr, "Loading model: %s ...\n", cli.model.c_str());
     auto load_start = std::chrono::steady_clock::now();
-    llama_model * model = llama_model_load_from_file(cli.model.c_str(), mparams);
+    LlamaModel model(llama_model_load_from_file(cli.model.c_str(), mparams));
     if (!model) {
         fprintf(stderr, "\033[31merror: failed to load model '%s'\033[0m\n", cli.model.c_str());
         return 1;
@@ -844,13 +972,12 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     if (cfg.mtp) {
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
-    llama_context * ctx = llama_init_from_model(model, cparams);
+    LlamaContext ctx(llama_init_from_model(model, cparams));
     if (!ctx) {
         fprintf(stderr, "\033[31merror: failed to create context\033[0m\n");
-        llama_model_free(model);
         return 1;
     }
-    llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    LlamaSampler smpl(llama_sampler_chain_init(llama_sampler_chain_default_params()));
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(cfg.temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -884,7 +1011,7 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     if (grammar_active) printf("  grammar : %s\n", cli.grammar.c_str());
     printf("  commands: /exit /clear /stats /undo /export /model /temp <f> /ctx\n\n");
     std::vector<ChatMessage> history;
-    std::vector<llama_chat_message> messages;
+    ChatMessages messages;
     std::vector<char> formatted(cparams.n_ctx * 4);
     int prev_len = 0;
     int total_tokens_generated = 0;
@@ -953,7 +1080,6 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
         return {response, stats};
     };
     auto rebuild_messages = [&]() {
-        for (auto & msg : messages) free(const_cast<char *>(msg.content));
         messages.clear();
         prev_len = 0;
         for (const auto & h : history) {
@@ -976,6 +1102,7 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
             if (!std::getline(std::cin, user_input)) break;
             while (!user_input.empty() && (user_input.back() == '\n' || user_input.back() == '\r'))
                 user_input.pop_back();
+            if (g_interrupted.load()) break;
             if (user_input.empty()) continue;
             if (user_input == "/exit" || user_input == "/quit") break;
             if (user_input == "/clear") {
@@ -1067,10 +1194,13 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
                 continue;
             }
             if (user_input.substr(0, 6) == "/temp ") {
-                float new_temp = std::stof(user_input.substr(6));
+                float new_temp = 0;
+                if (!parse_float(user_input.substr(6), new_temp) || new_temp < 0) {
+                    printf("Invalid temperature.\n\n");
+                    continue;
+                }
                 cfg.temp = new_temp;
-                llama_sampler_free(smpl);
-                smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+                smpl.reset(llama_sampler_chain_init(llama_sampler_chain_default_params()));
                 llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
                 llama_sampler_chain_add(smpl, llama_sampler_init_temp(new_temp));
                 llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -1104,7 +1234,6 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
                 fprintf(stderr, "\033[33mchat template failed, using raw prompt\033[0m\n");
                 std::string raw = user_input + "\n";
                 history.pop_back();
-                free(const_cast<char *>(messages.back().content));
                 messages.pop_back();
                 printf("\033[33m");
                 auto [resp, stats] = generate(raw);
@@ -1152,10 +1281,6 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
                     stats.tokens_generated, stats.tps(), stats.elapsed_sec);
         }
     }
-    for (auto & msg : messages) free(const_cast<char *>(msg.content));
-    llama_sampler_free(smpl);
-    llama_free(ctx);
-    llama_model_free(model);
     printf("\nExiting.\n");
     return 0;
 }
@@ -1166,6 +1291,7 @@ int main(int argc, char ** argv) {
         if (level >= GGML_LOG_LEVEL_ERROR) fprintf(stderr, "%s", text);
     }, nullptr);
     CliArgs cli = parse_args(argc, argv);
+    if (cli.invalid) { print_usage(); return 1; }
     if (cli.help)    { print_usage(); return 0; }
     if (cli.version) { printf("anvil %s\n", ANVIL_VERSION); return 0; }
     if (cli.model.empty()) {
@@ -1185,11 +1311,10 @@ int main(int argc, char ** argv) {
         llama_model_params mparams = llama_model_default_params();
         mparams.n_gpu_layers = 0;
         mparams.vocab_only = true;
-        llama_model * meta_model = llama_model_load_from_file(cli.model.c_str(), mparams);
+        LlamaModel meta_model(llama_model_load_from_file(cli.model.c_str(), mparams));
         if (meta_model) {
             max_ctx = llama_model_n_ctx_train(meta_model);
             if (max_ctx <= 0) max_ctx = 262144;
-            llama_model_free(meta_model);
         }
     }
     if (!config_exists()) {
@@ -1202,7 +1327,7 @@ int main(int argc, char ** argv) {
     }
     fprintf(stderr, "Hardware: %s | %s | %" PRIu64 " GB RAM | %d threads\n",
             hw.cpu.c_str(), hw.arch.c_str(),
-            hw.ram_bytes / (1024ULL * 1024 * 1024),
+            (uint64_t)(hw.ram_bytes / (1024ULL * 1024 * 1024)),
             hw.cpu_threads);
     for (const auto & gpu : hw.gpus) {
         fprintf(stderr, "GPU: %s (%s) %" PRIu64 " MB VRAM%s\n",
