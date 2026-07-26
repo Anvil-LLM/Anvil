@@ -34,7 +34,7 @@ jobs:
       # Runs only for the Vulkan job (linux-x86_64).
       - name: Setup Vulkan SDK
         if: runner.os == 'Linux' && contains(matrix.flags, 'VULKAN')
-        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        uses: humbletim/setup-vulkan-sdk@main
         with:
           vulkan-query-version: latest
           vulkan-components: Vulkan-Headers, Vulkan-Loader, Glslang, Shaderc
