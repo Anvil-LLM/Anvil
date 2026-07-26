@@ -7,7 +7,7 @@
 
 ## What is it?
 
-Anvil is a terminal-first local LLM tool that links `llama.cpp` directly natively. One binary. Zero runtime dependencies. No background daemon. No hidden blob storage. No telemetry. Just pure, raw, in-process inference.
+Anvil is a terminal-first local LLM tool that runs natively. One files, One binary. Zero runtime dependencies. No background daemon. No hidden blob storage. No telemetry. Just pure, raw, in-process inference.
 
 | Status Quo | Anvil |
 |---|---|
@@ -73,10 +73,10 @@ anvil serve
 
 ## Why Anvil?
 
-- **In-process by default.** Inference runs natively via C FFI. No HTTP roundtrip, no JSON per token, no subprocess overhead.
+- **In-process by default.** Inference runs natively via C++ compiled binary. No HTTP roundtrip, no JSON per token, no subprocess overhead.
 - **Zero jank.** 60 fps TUI. <2s startup. Background threads sleep when idle.
 - **Everything is opt-in.** The core engine is the only thing that ships by default. TUI, API server, cloud proxy, finetuning — enabled and loaded only when you choose.
-- **One binary.** Download `anvil`. It works. No extra files, no tracking, no telemetry.
+- **One binary.** Download `anvil` or run the curl installer. It just works. No extra files, no tracking, no telemetry.
 - **Hardware-adaptive.** Auto-detects your CPU, GPU, RAM, and picks the fastest backend and settings. Zero config.
 - **Transparent.** Plain GGUF models. Plain JSON config. Plain text logs. No hidden magic.
 
@@ -89,7 +89,7 @@ Anvil compiles `llama.cpp` as a static library and links it directly into a sing
 | Layer | Implementation |
 |---|---|
 | **Engine** | `llama.cpp` (TurboQuant, speculative decoding, Metal/CUDA/Vulkan/CPU) |
-| **Interface** | Rust FFI via `llama.h` (pure C API). Zero serialization overhead. |
+| **Interface** | Direct C++ `llama.h` (pure C API). Zero serialization overhead. |
 | **Orchestrator** | Rust: model lifecycle, inference loop, hardware probing, configuration |
 | **TUI** | `ratatui` — multi-pane chat, monitoring, real-time stats |
 | **API** | `axum` — OpenAI-compatible HTTP, in-process routing |
@@ -106,7 +106,7 @@ Anvil compiles `llama.cpp` as a static library and links it directly into a sing
 | TurboQuant | ✅ |
 | Metal / CUDA / Vulkan / CPU backends | ✅ |
 | Speculative decoding (MTP/NextN) | ✅ |
-| TUI chat (`anvil run`) | 🛠️ |
+| TUI chat (`anvil run`) | ✅ |
 | Monitoring dashboard | 🛠️ |
 | OpenAI API server (`anvil serve`) | 🛠️ |
 | Hardware auto-probe | 🛠️ |
