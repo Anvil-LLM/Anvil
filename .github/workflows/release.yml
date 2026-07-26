@@ -1,0 +1,58 @@
+name: anvil
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON"
+          - name: macos-aarch64
+            os: macos-14
+            flags: "-DGGML_NATIVE=OFF"
+          - name: macos-x86_64
+            os: macos-13
+            flags: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git libvulkan-dev
+
+      - name: Configure
+        run: >
+          cmake -B build -S .
+          -DCMAKE_BUILD_TYPE=Release
+          ${{ matrix.flags }}
+
+      - name: Build
+        run: cmake --build build --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+
+      - name: Strip binary
+        run: strip build/anvil || true
+
+      - name: Rename to release asset
+        run: cp build/anvil anvil-${{ matrix.name }}
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: anvil-${{ matrix.name }}
