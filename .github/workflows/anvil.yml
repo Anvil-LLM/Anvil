@@ -14,23 +14,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ubuntu-24.04 ships a dedicated `glslc` package (verified).
-          # 22.04 does not — it only comes in the Vulkan SDK.
           - name: linux-x86_64
             os: ubuntu-24.04
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
-          # ARM Linux: CPU-only (no Vulkan), avoids ARM+Vulkan complexity.
           - name: linux-aarch64
             os: ubuntu-24.04-arm
             flags: "-DGGML_NATIVE=OFF"
-          # Apple Silicon: Metal is forced on by CMakeLists, no extra deps.
           - name: macos-aarch64
             os: macos-latest
             flags: "-DGGML_NATIVE=OFF"
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
