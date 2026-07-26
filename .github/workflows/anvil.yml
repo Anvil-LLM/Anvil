@@ -14,12 +14,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ubuntu-24.04 ships a dedicated `glslc` package (verified).
+          # 22.04 does not — it only comes in the Vulkan SDK.
           - name: linux-x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+          # ARM Linux: CPU-only (no Vulkan), avoids ARM+Vulkan complexity.
           - name: linux-aarch64
             os: ubuntu-24.04-arm
             flags: "-DGGML_NATIVE=OFF"
+          # Apple Silicon: Metal is forced on by CMakeLists, no extra deps.
           - name: macos-aarch64
             os: macos-latest
             flags: "-DGGML_NATIVE=OFF"
@@ -30,19 +34,14 @@ jobs:
         with:
           submodules: recursive
 
-      # Provides glslc (via Shaderc) — the binary ggml's Vulkan build requires.
-      # Runs only for the Vulkan job (linux-x86_64).
-      - name: Setup Vulkan SDK
-        if: runner.os == 'Linux' && contains(matrix.flags, 'VULKAN')
-        uses: humbletim/setup-vulkan-sdk@main
-        with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers, Vulkan-Loader, Glslang, Shaderc
-          vulkan-use-cache: true
-
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ git
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ git libvulkan-dev
+          if [[ "${{ matrix.flags }}" == *VULKAN* ]]; then
+            sudo apt-get install -y glslc
+          fi
 
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
@@ -53,16 +52,17 @@ jobs:
       - name: Check Vulkan linkage (Linux)
         if: runner.os == 'Linux'
         run: |
+          echo "=== Vulkan dependency check ==="
           if ldd build/anvil | grep -i vulkan; then
-            echo "⚠ hard libvulkan dependency"
+            echo "⚠ hard libvulkan dependency detected"
           else
-            echo "✅ dlopen fallback active"
+            echo "✅ no hard dependency — dlopen fallback active"
           fi
 
-      - name: Strip
+      - name: Strip binary
         run: strip build/anvil || true
 
-      - name: Rename
+      - name: Rename to release asset
         run: cp build/anvil anvil-${{ matrix.name }}
 
       - name: Attach to release
