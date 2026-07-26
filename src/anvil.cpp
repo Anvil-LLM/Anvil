@@ -854,16 +854,18 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(cfg.temp));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-    llama_grammar * grammar = nullptr;
+    bool        grammar_active = false;
+    std::string grammar_src;  
     if (!cli.grammar.empty()) {
         std::ifstream gf(cli.grammar);
         if (!gf) {
             fprintf(stderr, "\033[31merror: cannot open grammar file '%s'\033[0m\n", cli.grammar.c_str());
         } else {
-            std::string grammar_str((std::istreambuf_iterator<char>(gf)), std::istreambuf_iterator<char>());
-            grammar = llama_grammar_init(nullptr, grammar_str.c_str(), "root", false, nullptr, 0, nullptr, 0);
-            if (grammar) {
-                llama_sampler_chain_add(smpl, llama_sampler_init_grammar(grammar, "root", false));
+            grammar_src.assign((std::istreambuf_iterator<char>(gf)), std::istreambuf_iterator<char>());
+            llama_sampler * grammar_smpl = llama_sampler_init_grammar(vocab, grammar_src.c_str(), "root");
+            if (grammar_smpl) {
+                llama_sampler_chain_add(smpl, grammar_smpl);
+                grammar_active = true;
                 fprintf(stderr, "  grammar     : \033[32m%s\033[0m\n", cli.grammar.c_str());
             } else {
                 fprintf(stderr, "\033[31merror: failed to parse grammar\033[0m\n");
@@ -879,7 +881,7 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     printf("  temp    : %.2f\n", cfg.temp);
     if (cfg.mtp)     printf("  spec    : MTP\n");
     if (cfg.triattn) printf("  triattn : on\n");
-    if (grammar)     printf("  grammar : %s\n", cli.grammar.c_str());
+    if (grammar_active) printf("  grammar : %s\n", cli.grammar.c_str());
     printf("  commands: /exit /clear /stats /undo /export /model /temp <f> /ctx\n\n");
     std::vector<ChatMessage> history;
     std::vector<llama_chat_message> messages;
