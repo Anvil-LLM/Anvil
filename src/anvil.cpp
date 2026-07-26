@@ -1056,7 +1056,9 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
             if (user_input == "/model") {
                 printf("\n\033[1;36m── Model Info ──\033[0m\n");
                 printf("  file       : %s\n", cli.model.c_str());
-                printf("  arch       : %s\n", llama_model_arch(model));
+                char arch_buf[256];
+                llama_model_desc(model, arch_buf, sizeof(arch_buf));
+                printf("  arch       : %s\n", arch_buf);
                 printf("  trained ctx: %d\n", n_ctx_train);
                 printf("  encoder    : %s\n", has_encoder ? "yes" : "no");
                 printf("  decoder    : %s\n", has_decoder ? "yes" : "no");
@@ -1072,8 +1074,8 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
                 llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
                 llama_sampler_chain_add(smpl, llama_sampler_init_temp(new_temp));
                 llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-                if (grammar) {
-                    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(grammar, "root", false));
+                if (grammar_active) {
+                    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(vocab, grammar_src.c_str(), "root"));
                 }
                 printf("Temperature set to %.2f\n\n", new_temp);
                 continue;
@@ -1151,7 +1153,6 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
         }
     }
     for (auto & msg : messages) free(const_cast<char *>(msg.content));
-    if (grammar) llama_grammar_free(grammar);
     llama_sampler_free(smpl);
     llama_free(ctx);
     llama_model_free(model);
