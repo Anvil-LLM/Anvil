@@ -34,10 +34,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ git \
-            libvulkan-dev vulkan-headers \
-            glslc glslang-dev glslang-tools \
-            spirv-headers spirv-tools libspirv-tools-dev
-
+            libvulkan-dev glslc glslang-tools glslang-dev \
+            spirv-headers spirv-tools
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
 
