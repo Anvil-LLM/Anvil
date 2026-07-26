@@ -46,6 +46,16 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
+      - name: Check Vulkan linkage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "=== Vulkan dependency check ==="
+          if ldd build/anvil | grep -i vulkan; then
+            echo "⚠ hard libvulkan dependency detected"
+          else
+            echo "✅ no hard dependency — dlopen fallback active"
+          fi
+
       - name: Strip binary
         run: strip build/anvil || true
 
