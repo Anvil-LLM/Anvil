@@ -20,12 +20,10 @@ set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_APP      OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
 
-# GPU backends default OFF for portable binaries; CI/users opt in.
+# GPU backends default OFF; CI/users opt in. Metal is always available on macOS.
 set(GGML_METAL  OFF CACHE BOOL "")
 set(GGML_VULKAN OFF CACHE BOOL "")
 set(GGML_CUDA   OFF CACHE BOOL "")
-
-# macOS always has Metal.
 if(APPLE)
     set(GGML_METAL ON CACHE BOOL "" FORCE)
 endif()
@@ -55,23 +53,14 @@ target_link_libraries(anvil PRIVATE llama ftxui::ftxui)
 
 if(APPLE)
     target_link_libraries(anvil PRIVATE
-        "-framework Metal"
-        "-framework Foundation"
-        "-framework Accelerate"
-        "-framework QuartzCore"
-        "-framework CoreFoundation"
-        "-framework IOKit"
-        "-lc++"
-        "-lobjc"
+        "-framework Metal" "-framework Foundation" "-framework Accelerate"
+        "-framework QuartzCore" "-framework CoreFoundation" "-framework IOKit"
+        "-lc++" "-lobjc"
     )
 elseif(UNIX)
+    # ggml-vulkan dlopens libvulkan at runtime and falls back to CPU if absent.
+    # Do NOT link Vulkan here — that would hard-link it and crash on Vulkan-less boxes.
     target_link_libraries(anvil PRIVATE pthread dl m)
-    # ggml-vulkan dlopens libvulkan.so at runtime and falls back to CPU if
-    # absent. Do NOT link Vulkan::Vulkan here — that would hard-link libvulkan
-    # and crash on machines without it. Headers only, for the build.
-    if(GGML_VULKAN)
-        find_package(Vulkan QUIET)
-    endif()
 endif()
 
 install(TARGETS anvil RUNTIME DESTINATION bin)
