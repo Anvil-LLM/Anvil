@@ -19,7 +19,7 @@ jobs:
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
           - name: linux-aarch64
             os: ubuntu-24.04-arm
-            flags: "-DGGML_NATIVE=OFF"
+            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON"
           - name: macos-aarch64
             os: macos-latest
             flags: "-DGGML_NATIVE=OFF"
