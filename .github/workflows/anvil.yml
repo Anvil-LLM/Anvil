@@ -19,25 +19,33 @@ jobs:
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
           - name: linux-aarch64
             os: ubuntu-24.04-arm
-            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON"
-          - name: macos-aarch64
-            os: macos-15
             flags: "-DGGML_NATIVE=OFF"
+          - name: macos-aarch64
+            os: macos-latest
+            flags: "-DGGML_NATIVE=OFF"
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # Provides glslc (via Shaderc) — the binary ggml's Vulkan build requires.
+      # Runs only for the Vulkan job (linux-x86_64).
+      - name: Setup Vulkan SDK
+        if: runner.os == 'Linux' && contains(matrix.flags, 'VULKAN')
+        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, Glslang, Shaderc
+          vulkan-use-cache: true
+
       - name: Install build deps (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake g++ git libvulkan-dev glslang-tools
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ git
+
       - name: Configure
-        run: >
-          cmake -B build -S .
-          -DCMAKE_BUILD_TYPE=Release
-          ${{ matrix.flags }}
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
 
       - name: Build
         run: cmake --build build --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
@@ -45,17 +53,16 @@ jobs:
       - name: Check Vulkan linkage (Linux)
         if: runner.os == 'Linux'
         run: |
-          echo "=== Vulkan dependency check ==="
           if ldd build/anvil | grep -i vulkan; then
-            echo "⚠ hard libvulkan dependency detected"
+            echo "⚠ hard libvulkan dependency"
           else
-            echo "✅ no hard dependency — dlopen fallback active"
+            echo "✅ dlopen fallback active"
           fi
 
-      - name: Strip binary
+      - name: Strip
         run: strip build/anvil || true
 
-      - name: Rename to release asset
+      - name: Rename
         run: cp build/anvil anvil-${{ matrix.name }}
 
       - name: Attach to release
