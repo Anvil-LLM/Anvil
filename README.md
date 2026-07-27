@@ -23,7 +23,7 @@ Anvil is a terminal-first local LLM tool that runs natively. One files, One bina
 ## Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/gondaliyashreyan1/Anvil/main/install.sh | sh
+curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh
 ```
 
 Or build from source:

@@ -1,107 +1,237 @@
 #!/bin/sh
-# anvil — Forge anything.
-# install:  curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh
+# anvil installer — POSIX sh, interactive or unattended.
+# Usage: curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh
+# Env: INSTALL_DIR, ANVIL_VERSION (e.g. v0.3.1), ANVIL_BUILD=1
 set -e
 
-VERSION="v*.*.*"
-REPO="https://github.com/anvil-llm/anvil"
-INSTALL_DIR="/usr/local/bin"
+REPO="anvil-llm/anvil"
+REPO_URL="https://github.com/${REPO}"
+API_URL="https://api.github.com/repos/${REPO}/releases"
+DEFAULT_DIR="/usr/local/bin"
 
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; C='\033[0;36m'; A='\033[0;33m'; N='\033[0m'
-info(){ printf "${C}▸${N} %s\n" "$1"; }
-ok(){   printf "${G}✓${N} %s\n" "$1"; }
-warn(){ printf "${Y}⚠${N} %s\n" "$1"; }
-die(){  printf "${R}✗ %s${N}\n" "$1"; exit 1; }
+# ── helpers ──
+log() { printf "%s\n" "$1"; }
+err() { printf "error: %s\n" "$1" >&2; }
+die() { err "$1"; exit 1; }
 
-printf "${A}"
-cat <<'EOF'
-   ░███                          ░██░██ 
-  ░██░██                            ░██ 
- ░██  ░██  ░████████  ░██    ░██ ░██░██ 
-░█████████ ░██    ░██ ░██    ░██ ░██░██ 
-░██    ░██ ░██    ░██  ░██  ░██  ░██░██ 
-░██    ░██ ░██    ░██   ░██░██   ░██░██ 
-░██    ░██ ░██    ░██    ░███    ░██░██
-EOF
-printf "${N}\n  anvil installer v%s\n\n" "$VERSION"
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+is_tty() { [ -t 0 ] && [ -t 1 ]; }
 
-# ── detect platform ──
-OS=$(uname -s); ARCH=$(uname -m)
+# ── platform detection ──
+OS=$(uname -s)
+ARCH=$(uname -m)
+
 case "$OS" in
   Linux*)  OSN=linux ;;
   Darwin*) OSN=macos ;;
   *) die "unsupported OS: $OS" ;;
 esac
+
 case "$ARCH" in
-  x86_64|amd64)   ARN=x86_64 ;;
-  aarch64|arm64)  ARN=aarch64 ;;
-  *) die "unsupported arch: $ARCH" ;;
+  x86_64|amd64)  ARN=x86_64 ;;
+  aarch64|arm64) ARN=aarch64 ;;
+  *) die "unsupported architecture: $ARCH" ;;
 esac
-info "detected: $OSN / $ARN"
 
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+ASSET="anvil-${OSN}-${ARN}"
 
-# ── 1. download the prebuilt binary (built by GitHub Actions) ──
-try_binary(){
-  URL="$REPO/releases/download/v$VERSION/anvil-$OSN-$ARN"
-  info "downloading prebuilt binary…"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$TMP/anvil" "$URL" 2>/dev/null || return 1
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$TMP/anvil" "$URL" 2>/dev/null || return 1
-  else return 1; fi
-  chmod +x "$TMP/anvil"
-  # Test-run it. If a required lib is missing, the loader aborts with a
-  # non-zero exit BEFORE main() — we catch it here and fall back to building.
-  if "$TMP/anvil" --version >/dev/null 2>&1; then
-    return 0
+# ── temp files ──
+TMPDIR=${TMPDIR:-/tmp}
+TMP_BASE="${TMPDIR}/anvil-install-$$"
+mkdir -p "$TMP_BASE"
+trap 'rm -rf "$TMP_BASE"' EXIT
+
+# ── network ──
+http_get_stdout() {
+  if has_cmd curl; then
+    curl -fsSL "$1"
+  elif has_cmd wget; then
+    wget -qO- "$1"
+  else
+    die "curl or wget is required"
   fi
-  warn "prebuilt binary wouldn't run on this machine"
-  return 1
 }
 
-# ── 2. fallback: build from source (rare) ──
-build_source(){
-  info "building from source (few minutes)…"
-  command -v git   >/dev/null 2>&1 || die "git is required"
-  command -v cmake >/dev/null 2>&1 || die "cmake is required"
-  if ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
-    die "g++ or clang++ is required"
+http_get_file() {
+  _url=$1
+  _out=$2
+  if has_cmd curl; then
+    curl -fsSL -o "$_out" "$_url"
+  elif has_cmd wget; then
+    wget -q -O "$_out" "$_url"
+  else
+    die "curl or wget is required"
   fi
-  info "cloning anvil (with submodules)…"
-  git clone --recursive --depth 1 --shallow-submodules "$REPO" "$TMP/anvil-src" \
-    || die "failed to clone anvil"
-  info "compiling…"
-  cmake -B "$TMP/anvil-src/build" -S "$TMP/anvil-src" \
-        -DCMAKE_BUILD_TYPE=Release >/dev/null
-  cmake --build "$TMP/anvil-src/build" -j"$NPROC" >/dev/null || die "build failed"
-  cp "$TMP/anvil-src/build/anvil" "$TMP/anvil"
-  chmod +x "$TMP/anvil"
-  ok "build complete"
 }
 
-if try_binary; then ok "got prebuilt binary"; else build_source; fi
+# ── release tag resolution ──
+resolve_tag() {
+  if [ -n "$ANVIL_VERSION" ]; then
+    TAG=$ANVIL_VERSION
+    log "Using requested version: $TAG"
+    return
+  fi
+  log "Detecting latest release..."
 
-# ── install ──
-info "installing…"
-if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMP/anvil" "$INSTALL_DIR/anvil"
-elif command -v sudo >/dev/null 2>&1; then
-  sudo mv "$TMP/anvil" "$INSTALL_DIR/anvil"
-else
-  INSTALL_DIR="$HOME/.local/bin"; mkdir -p "$INSTALL_DIR"
-  mv "$TMP/anvil" "$INSTALL_DIR/anvil"
-fi
-ok "installed to $INSTALL_DIR/anvil"
+  # Prefer curl's redirect target (no rate limit), then fall back to GitHub API.
+  if has_cmd curl; then
+    TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${REPO_URL}/releases/latest")
+    TAG=${TAG##*/}
+  fi
 
-mkdir -p "$HOME/.anvil"
-ok "config dir: $HOME/.anvil"
+  if [ -z "$TAG" ]; then
+    TAG=$(http_get_stdout "${API_URL}/latest" | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -1)
+  fi
 
-if command -v anvil >/dev/null 2>&1; then
-  printf "\n"; ok "anvil is ready. go forge something."
-  printf "\n    anvil run model.gguf\n    anvil --help\n\n"
-else
-  warn "$INSTALL_DIR isn't in your PATH. add this to your shell profile:"
-  printf "    export PATH=\"%s:\$PATH\"\n" "$INSTALL_DIR"
-fi
+  if [ -z "$TAG" ]; then
+    die "could not determine latest release (network issue or GitHub API rate limit)."
+  fi
+  log "Latest release: $TAG"
+}
+
+# ── prebuilt binary path ──
+install_binary() {
+  resolve_tag
+  URL="${REPO_URL}/releases/download/${TAG}/${ASSET}"
+  TMP_BIN="${TMP_BASE}/anvil"
+  log "Downloading ${ASSET}..."
+  if ! http_get_file "$URL" "$TMP_BIN"; then
+    err "prebuilt binary not available for ${ASSET} at ${TAG}"
+    return 1
+  fi
+  chmod +x "$TMP_BIN"
+  if ! "$TMP_BIN" --version >/dev/null 2>&1; then
+    err "downloaded binary does not run on this system (missing libraries?)"
+    return 1
+  fi
+  mv "$TMP_BIN" "$TARGET/anvil"
+  chmod +x "$TARGET/anvil"
+  log "Installed anvil ${TAG} -> ${TARGET}/anvil"
+}
+
+# ── source build path ──
+build_from_source() {
+  has_cmd git || die "git is required to build from source"
+  has_cmd cmake || die "cmake is required to build from source"
+  if ! has_cmd g++ && ! has_cmd clang++; then
+    die "g++ or clang++ is required to build from source"
+  fi
+  log "Cloning ${REPO}..."
+  SRC_DIR="${TMP_BASE}/anvil-src"
+  git clone --recursive --depth 1 "$REPO_URL" "$SRC_DIR"
+  log "Building anvil (this may take a few minutes)..."
+  cmake -B "$SRC_DIR/build" -S "$SRC_DIR" -DCMAKE_BUILD_TYPE=Release >/dev/null
+  cmake --build "$SRC_DIR/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" >/dev/null || die "build failed"
+  cp "$SRC_DIR/build/anvil" "$TARGET/anvil"
+  chmod +x "$TARGET/anvil"
+  log "Built and installed anvil -> ${TARGET}/anvil"
+}
+
+# ── install target ──
+choose_target() {
+  if [ -n "$INSTALL_DIR" ]; then
+    TARGET=$INSTALL_DIR
+    return
+  fi
+  if is_tty; then
+    log ""
+    log "Where should anvil be installed?"
+    printf "  1) %s (needs sudo if not writable)\n" "$DEFAULT_DIR"
+    printf "  2) %s\n" "$HOME/.local/bin"
+    printf "  3) custom path\n"
+    printf "Choose [1]: "
+    read -r choice || true
+    case "$choice" in
+      2) TARGET="$HOME/.local/bin" ;;
+      3)
+        printf "Path: "
+        read -r TARGET || true
+        ;;
+      *) TARGET="$DEFAULT_DIR" ;;
+    esac
+  else
+    TARGET="$DEFAULT_DIR"
+  fi
+  mkdir -p "$TARGET" || die "cannot create ${TARGET}"
+  if [ ! -w "$TARGET" ]; then
+    if has_cmd sudo; then
+      die "${TARGET} is not writable. run with sudo, or set INSTALL_DIR."
+    else
+      die "${TARGET} is not writable. run as root, or set INSTALL_DIR."
+    fi
+  fi
+}
+
+# ── path hint ──
+ensure_path() {
+  [ "$TARGET" = "$DEFAULT_DIR" ] && return
+  case ":$PATH:" in
+    *":$TARGET:"*) ;;
+    *)
+      log ""
+      log "Add the following to your shell profile so 'anvil' is in your PATH:"
+      log "  export PATH=\"${TARGET}:\$PATH\""
+      ;;
+  esac
+}
+
+# ── main ──
+main() {
+  log ""
+  log "anvil installer"
+  log "Detected: ${OSN} / ${ARN}"
+
+  choose_target
+  log "Install target: ${TARGET}"
+
+  if [ -n "$ANVIL_BUILD" ] || [ "$1" = "--build" ] || [ "$1" = "--source" ]; then
+    build_from_source
+  elif ! is_tty; then
+    log "Non-interactive mode: trying prebuilt binary..."
+    install_binary || exit 1
+  else
+    log ""
+    log "What would you like to do?"
+    printf "  1) Install prebuilt binary (fast, default)\n"
+    printf "  2) Build from source (slow, but always works)\n"
+    printf "  3) Cancel\n"
+    printf "Choose [1]: "
+    read -r choice || true
+    case "$choice" in
+      3)
+        log "Cancelled."
+        exit 0
+        ;;
+      2)
+        build_from_source
+        ;;
+      *)
+        if ! install_binary; then
+          printf "Prebuilt binary unavailable. Build from source instead? [y/N]: "
+          read -r yn || true
+          case "$yn" in
+            [yY]*) build_from_source ;;
+            *) log "Cancelled."; exit 0 ;;
+          esac
+        fi
+        ;;
+    esac
+  fi
+
+  mkdir -p "$HOME/.anvil/models"
+  log "Config directory: ${HOME}/.anvil"
+  log "Models directory: ${HOME}/.anvil/models"
+
+  if "$TARGET/anvil" --version >/dev/null 2>&1; then
+    log ""
+    log "anvil is ready. Go forge something."
+    log "  anvil --help"
+    log "  anvil run model.gguf"
+  else
+    die "installation completed, but ${TARGET}/anvil could not be executed."
+  fi
+
+  ensure_path
+}
+
+main "$@"
