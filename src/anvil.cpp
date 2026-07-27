@@ -962,7 +962,7 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     fprintf(stderr, "\n");
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = cfg.n_ctx;
-    cparams.n_batch   = std::min(cfg.n_ctx, 2048);
+    cparams.n_batch   = cfg.n_ctx;
     cparams.n_threads = cfg.n_threads > 0 ? cfg.n_threads : hw.cpu_threads;
     cparams.flash_attn_type = cfg.flash_attn
         ? LLAMA_FLASH_ATTN_TYPE_ENABLED
