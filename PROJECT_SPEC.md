@@ -53,19 +53,19 @@ The `llama.cpp` codebase (`backends/llama-turbo` fork) is compiled as a static l
 
 **Interface:** Direct C++ calls via `llama.h` (pure C API). Zero serialization overhead.
 
-### 3.2 The Application Layer
+### 3.2 The Application Layer (`src/anvil.cpp`)
 
-The application is split into a core inference engine and external feature modules. External modules have **zero dependency on `llama.h`/`ggml.h`** and can be compiled and tested independently.
+Single translation unit containing:
 
-| File | Component | Description | Depends on llama.cpp? |
-|---|---|---|---|
-| `src/anvil.cpp` | **Core Engine** | `run_chat()` — interactive REPL, `main()` — entry point, RAII wrappers (`LlamaModel`, `LlamaContext`, `LlamaSampler`, `ChatMessages`) | ✅ Yes |
-| `src/common.h` | **Shared Types** | Version info, KV cache options, `HWInfo`, `AnvilConfig`, `CliArgs`, `Utf8Buffer`, `ChatMessage`, `GenStats`, parse helpers | ❌ No |
-| `src/hardware.cpp` | **Hardware Probing** | `probe_hw()` — cross-platform CPU/GPU/RAM detection, `derive_ngl()` | ❌ No |
-| `src/config.cpp` | **Config Management** | `load_config()` / `write_config()` — JSON config at `~/.anvil/config.json` | ❌ No |
-| `src/cli.cpp` | **CLI Parsing** | `parse_args()` — manual flag parsing with friendly aliases | ❌ No |
-| `src/tui.cpp` | **Setup TUI** | `run_setup_tui()` — FTXUI-based first-run interactive wizard | ❌ No |
-| `src/session.cpp` | **Session Export** | `export_session()` — saves conversations to `~/.anvil/sessions/` | ❌ No |
+| Component | Description |
+|---|---|
+| **CLI Parsing** | `parse_args()` — manual flag parsing with friendly aliases |
+| **Hardware Probing** | `probe_hw()` — cross-platform CPU/GPU/RAM detection |
+| **Config Management** | `load_config()` / `write_config()` — JSON config at `~/.anvil/config.json` |
+| **Setup TUI** | `run_setup_tui()` — FTXUI-based first-run interactive wizard |
+| **Chat Engine** | `run_chat()` — interactive REPL with 9 commands, grammar support, streaming |
+| **Session Export** | `export_session()` — saves conversations to `~/.anvil/sessions/` |
+| **RAII Wrappers** | `LlamaModel`, `LlamaContext`, `LlamaSampler`, `ChatMessages` — automatic resource management |
 
 ### 3.3 Directory Structure
 
@@ -82,13 +82,7 @@ The Anvil source tree:
 ```
 Anvil/
 ├── src/
-│   ├── common.h               # Shared types, utilities, version info
-│   ├── anvil.cpp              # Core inference engine (monolithic, depends on llama.cpp)
-│   ├── hardware.cpp            # Cross-platform hardware probing (no llama deps)
-│   ├── config.cpp              # JSON config read/write (no llama deps)
-│   ├── cli.cpp                 # CLI argument parsing (no llama deps)
-│   ├── tui.cpp                 # Setup TUI wizard (FTXUI, no llama deps)
-│   └── session.cpp             # Session export to Markdown (no llama deps)
+│   └── anvil.cpp              # Single translation unit — the entire application
 ├── backends/
 │   └── llama-turbo/            # Git submodule: llama.cpp fork with TurboQuant
 │       ├── include/llama.h     # C API header (FFI target)
@@ -421,7 +415,7 @@ GitHub Actions workflow that:
 3. **No hidden magic.** Auto-selected settings are visible and overridable.
 4. **Files are plain.** Models are files. Configs are JSON. Logs are text.
 5. **One binary.** The user downloads `anvil`. The end.
-6. **Modular external features, monolithic core.** Keep the core inference engine in `src/anvil.cpp` for simplicity and fast compilation. External features are separate files with zero dependency on llama.cpp.
+6. **Single translation unit.** Keep the core runtime in `src/anvil.cpp` for simplicity and fast compilation.
 
 ---
 
