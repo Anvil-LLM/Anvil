@@ -710,7 +710,7 @@ static void export_session(const std::vector<ChatMessage> & msgs, const std::str
 static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
     AnvilConfig cfg;
     cfg.ngl = derive_ngl(hw);
-    cfg.n_ctx = 8192;
+    cfg.n_ctx = 8192; //<-is this limiting context or not 
     std::vector<int> ctx_options;
     for (int c = 2048; c <= max_ctx; c *= 2) ctx_options.push_back(c);
     ctx_options.push_back(0); 
