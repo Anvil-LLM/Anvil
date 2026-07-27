@@ -17,6 +17,28 @@ die() { err "$1"; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 is_tty() { [ -t 0 ] && [ -t 1 ]; }
 
+# Privilege helper. Empty if the install target is writable; "sudo " otherwise.
+unset PRIV
+PRIV=""
+ensure_target_writable() {
+  # Create the directory if necessary, with or without sudo.
+  if ! mkdir -p "$TARGET" 2>/dev/null && has_cmd sudo; then
+    sudo -n mkdir -p "$TARGET" 2>/dev/null || true
+  fi
+
+  if [ -w "$TARGET" ]; then
+    PRIV=""
+    return 0
+  fi
+
+  if has_cmd sudo && sudo -n true 2>/dev/null; then
+    PRIV="sudo "
+    return 0
+  fi
+
+  return 1
+}
+
 # ── platform detection ──
 OS=$(uname -s)
 ARCH=$(uname -m)
@@ -104,8 +126,8 @@ install_binary() {
     err "downloaded binary does not run on this system (missing libraries?)"
     return 1
   fi
-  mv "$TMP_BIN" "$TARGET/anvil"
-  chmod +x "$TARGET/anvil"
+  ${PRIV}mv "$TMP_BIN" "$TARGET/anvil"
+  ${PRIV}chmod +x "$TARGET/anvil"
   log "Installed anvil ${TAG} -> ${TARGET}/anvil"
 }
 
@@ -122,8 +144,8 @@ build_from_source() {
   log "Building anvil (this may take a few minutes)..."
   cmake -B "$SRC_DIR/build" -S "$SRC_DIR" -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build "$SRC_DIR/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" >/dev/null || die "build failed"
-  cp "$SRC_DIR/build/anvil" "$TARGET/anvil"
-  chmod +x "$TARGET/anvil"
+  ${PRIV}cp "$SRC_DIR/build/anvil" "$TARGET/anvil"
+  ${PRIV}chmod +x "$TARGET/anvil"
   log "Built and installed anvil -> ${TARGET}/anvil"
 }
 
@@ -152,13 +174,13 @@ choose_target() {
   else
     TARGET="$DEFAULT_DIR"
   fi
-  mkdir -p "$TARGET" || die "cannot create ${TARGET}"
-  if [ ! -w "$TARGET" ]; then
-    if has_cmd sudo; then
-      die "${TARGET} is not writable. run with sudo, or set INSTALL_DIR."
-    else
-      die "${TARGET} is not writable. run as root, or set INSTALL_DIR."
+  if ! ensure_target_writable; then
+    TARGET="$HOME/.local/bin"
+    log "${DEFAULT_DIR} is not writable; falling back to ${TARGET}"
+    if ! mkdir -p "$TARGET" 2>/dev/null; then
+      die "cannot create ${TARGET}"
     fi
+    PRIV=""
   fi
 }
 
