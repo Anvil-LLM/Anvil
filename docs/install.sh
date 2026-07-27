@@ -3,7 +3,7 @@
 # install:  curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh
 set -e
 
-VERSION="0.2.0"
+VERSION="v*.*.*"
 REPO="https://github.com/anvil-llm/anvil"
 INSTALL_DIR="/usr/local/bin"
 
