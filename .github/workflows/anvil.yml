@@ -18,22 +18,26 @@ jobs:
             asset: anvil-linux-x86_64
             binary: build/anvil
             os: ubuntu-24.04
-            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+            parallel: 4
+            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_SYCL=OFF -DGGML_OPENVINO=OFF -DGGML_OPENCL=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
           - name: linux-aarch64
             asset: anvil-linux-aarch64
             binary: build/anvil
             os: ubuntu-24.04-arm
-            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON"
+            parallel: 2
+            flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_SYCL=OFF -DGGML_OPENVINO=OFF -DGGML_OPENCL=OFF"
           - name: macos-aarch64
             asset: anvil-macos-aarch64
             binary: build/anvil
             os: macos-latest
-            flags: "-DGGML_NATIVE=OFF"
+            parallel: 2
+            flags: "-DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_SYCL=OFF -DGGML_OPENVINO=OFF -DGGML_OPENCL=OFF"
           - name: windows-x86_64
             asset: anvil-windows-x86_64.exe
             binary: build/Release/anvil.exe
             os: windows-latest
-            flags: "-DGGML_NATIVE=OFF -DGGML_OPENMP=OFF"
+            parallel: 4
+            flags: "-DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_SYCL=OFF -DGGML_OPENVINO=OFF -DGGML_OPENCL=OFF"
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -51,7 +55,7 @@ jobs:
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel ${{ matrix.parallel }}
 
       - name: Check Vulkan linkage (Linux)
         if: runner.os == 'Linux'
