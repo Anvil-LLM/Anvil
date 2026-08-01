@@ -52,7 +52,7 @@ static const char*ANVIL_LOGO=R"(
 ░██    ░██ ░██    ░██   ░██░██   ░██░██ 
 ░██    ░██ ░██    ░██    ░███    ░██░██
 )";
-static const char*ANVIL_VERSION="0.2.1";
+static const char*ANVIL_VERSION="0.4.0";
 static const int CONFIG_VERSION=2;
 static std::atomic<bool>g_interrupted{false};
 static void signal_handler(int){g_interrupted.store(true,std::memory_order_relaxed);}
@@ -327,11 +327,9 @@ static HWInfo probe_hw() {
     if (hw.cpu_threads <= 0) hw.cpu_threads = 0;
 #ifdef __APPLE__
     {
-        std::string buf(256, '\0');
-        size_t len = buf.size();
-        if (sysctlbyname("machdep.cpu.brand_string", &buf[0], &len, nullptr, 0) == 0) {
-            buf.resize(strlen(buf.c_str()));
-            hw.cpu = buf;
+        std::string buf;
+        size_t len=0;
+        if(sysctlbyname("machdep.cpu.brand_string",nullptr,&len,nullptr,0)==0&&len>0){buf.resize(len);if(sysctlbyname("machdep.cpu.brand_string",&buf[0],&len,nullptr,0)==0){while(!buf.empty()&&buf.back()=='\0')buf.pop_back();hw.cpu=buf;
             hw.apple_silicon = (hw.cpu.find("Apple") != std::string::npos);
         }
     }
@@ -1062,9 +1060,8 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
             if (user_input == "/model") {
                 printf("\n\033[1;36m── Model Info ──\033[0m\n");
                 printf("  file       : %s\n", cli.model.c_str());
-                std::string arch_buf(256, '\0');
-                llama_model_desc(model, &arch_buf[0], arch_buf.size());
-                arch_buf.resize(strlen(arch_buf.c_str()));
+                std::string arch_buf;
+                arch_buf.resize(256);int alen=llama_model_desc(model,nullptr,0);if(alen>0){arch_buf.resize(alen+1);llama_model_desc(model,&arch_buf[0],arch_buf.size());arch_buf.resize(strlen(arch_buf.c_str()));}
                 printf("  arch       : %s\n", arch_buf.c_str());
                 printf("  trained ctx: %d\n", n_ctx_train);
                 printf("  encoder    : %s\n", has_encoder ? "yes" : "no");
