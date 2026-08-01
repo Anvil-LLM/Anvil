@@ -45,10 +45,7 @@ jobs:
       - name: Install Vulkan SDK (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe' -OutFile vulkan-sdk.exe
-          Start-Process -Wait -FilePath .\vulkan-sdk.exe -ArgumentList '--accept-license','--default-answer','--confirm-command','install'
+        run: vcpkg install vulkan --triplet x64-windows
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - name: Build
