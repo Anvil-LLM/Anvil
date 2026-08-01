@@ -15,14 +15,25 @@ jobs:
       matrix:
         include:
           - name: linux-x86_64
+            asset: anvil-linux-x86_64
+            binary: build/anvil
             os: ubuntu-24.04
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
           - name: linux-aarch64
+            asset: anvil-linux-aarch64
+            binary: build/anvil
             os: ubuntu-24.04-arm
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON"
           - name: macos-aarch64
+            asset: anvil-macos-aarch64
+            binary: build/anvil
             os: macos-latest
             flags: "-DGGML_NATIVE=OFF"
+          - name: windows-x86_64
+            asset: anvil-windows-x86_64.exe
+            binary: build/Release/anvil.exe
+            os: windows-latest
+            flags: "-DGGML_NATIVE=OFF -DGGML_OPENMP=OFF"
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -40,7 +51,7 @@ jobs:
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
 
       - name: Build
-        run: cmake --build build --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+        run: cmake --build build --config Release --parallel
 
       - name: Check Vulkan linkage (Linux)
         if: runner.os == 'Linux'
@@ -53,17 +64,23 @@ jobs:
           fi
 
       - name: Smoke test
-        run: |
-          ./build/anvil --version
-          ./build/anvil --help
+        shell: bash
+        run: bash tests/smoke.sh "${{ matrix.binary }}"
 
-      - name: Strip binary
+      - name: Strip Unix binary
+        if: runner.os != 'Windows'
         run: strip build/anvil || true
 
-      - name: Rename to release asset
-        run: cp build/anvil anvil-${{ matrix.name }}
+      - name: Rename Unix release asset
+        if: runner.os != 'Windows'
+        run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+
+      - name: Rename Windows release asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "${{ matrix.binary }}" "${{ matrix.asset }}"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: anvil-${{ matrix.name }}
+          files: ${{ matrix.asset }}
