@@ -49,8 +49,7 @@ jobs:
           $ProgressPreference = 'SilentlyContinue'
           $installer = "$env:TEMP\vulkan-sdk.exe"
           Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe' -OutFile $installer
-          $p = Start-Process -FilePath $installer -ArgumentList '--accept-license','--default-answer','--confirm-command','install','--root','C:\VulkanSDK' -Wait -NoNewWindow -PassThru
-          if ($p.ExitCode -ne 0) { throw "Vulkan SDK install failed with exit code $($p.ExitCode)" }
+          Start-Process -FilePath $installer -ArgumentList '/S' -Wait -NoNewWindow -PassThru
           echo "VULKAN_SDK=C:\VulkanSDK" >> $env:GITHUB_ENV
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
@@ -75,6 +74,7 @@ jobs:
         shell: pwsh
         run: Copy-Item "${{ matrix.binary }}" "${{ matrix.asset }}"
       - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset }}

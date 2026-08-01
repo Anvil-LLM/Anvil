@@ -340,6 +340,7 @@ static HWInfo probe_hw() {
         hw.ram_bytes = ram;
     }
     detect_gpus_macos(hw);
+    }
 #elif defined(__linux__)
     {
         std::ifstream f("/proc/cpuinfo");
