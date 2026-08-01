@@ -44,8 +44,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake g++ git libvulkan-dev glslc glslang-tools glslang-dev spirv-headers spirv-tools
       - name: Install Vulkan SDK (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: vcpkg install vulkan --triplet x64-windows
+        uses: humbletim/setup-vulkan-sdk@v1
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - name: Build
