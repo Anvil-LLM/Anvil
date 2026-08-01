@@ -7,7 +7,7 @@
 
 ## What is it?
 
-Anvil is a terminal-first local LLM tool that runs natively. One files, One binary. Zero runtime dependencies. No background daemon. No hidden blob storage. No telemetry. Just pure, raw, in-process inference.
+Anvil is a terminal-first local LLM tool that runs natively. One file. One binary. Zero runtime dependencies. No background daemon. No hidden blob storage. No telemetry. Just pure, raw, in-process inference.
 
 | Status Quo | Anvil |
 |---|---|
@@ -54,12 +54,7 @@ anvil run llama3.1 --no-tui
 ### Full control
 
 ```bash
-anvil run mymodel.gguf \
-  --backend metal \
-  --quant Q4_K_M \
-  --ctx 128000 \
-  --spec-type mtp \
-  --ngl 99
+anvil run mymodel.gguf --ctx 128000 --ngl -1 --type-k turbo4 --type-v turbo3 --mtp
 ```
 
 ---
@@ -125,7 +120,7 @@ Not yet implemented (roadmap):
 
 ## Contributing
 
-We welcome PRs, issues, and feature requests. See the full [Project Spec](./PROJECT_SPEC.md) for architecture and roadmap details.
+We welcome PRs, issues, and feature requests for architecture details.
 
 ---
 

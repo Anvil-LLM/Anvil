@@ -1,37 +1,33 @@
-#include "llama.h"
-#include "ggml.h"
-#include <ftxui/component/component.hpp>
-#include <ftxui/component/screen_interactive.hpp>
-#include <ftxui/dom/elements.hpp>
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cinttypes>
-#include <clocale>
-#include <cmath>
-#include <csignal>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <mutex>
-#include <sstream>
-#include <string>
-#include <thread>
-#include <utility>
-#include <vector>
+#include"llama.h"
+#include"ggml.h"
+#include<ftxui/component/component.hpp>
+#include<ftxui/component/screen_interactive.hpp>
+#include<ftxui/dom/elements.hpp>
+#include<atomic>
+#include<chrono>
+#include<cinttypes>
+#include<clocale>
+#include<cmath>
+#include<csignal>
+#include<cstdio>
+#include<cstdlib>
+#include<cstring>
+#include<filesystem>
+#include<fstream>
+#include<iostream>
+#include<sstream>
+#include<string>
+#include<thread>
+#include<utility>
+#include<vector>
 #ifdef __APPLE__
-#include <sys/sysctl.h>
-#include <IOKit/IOKitLib.h>
-#include <unistd.h>
+#include<sys/sysctl.h>
+#include<IOKit/IOKitLib.h>
+#include<unistd.h>
 #endif
 #ifdef __linux__
-#include <glob.h>
-#include <fstream>
-#include <regex>
-#include <unistd.h>
+#include<glob.h>
+#include<unistd.h>
 #endif
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -43,9 +39,11 @@
 #include <windows.h>
 #include <dxgi.h>
 #include <process.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "dxgi.lib")
 #endif
-static const char * ANVIL_LOGO = R"(
+#endif
+static const char*ANVIL_LOGO=R"(
    ░███                          ░██░██ 
   ░██░██                            ░██ 
  ░██  ░██  ░████████  ░██    ░██ ░██░██ 
@@ -54,14 +52,10 @@ static const char * ANVIL_LOGO = R"(
 ░██    ░██ ░██    ░██   ░██░██   ░██░██ 
 ░██    ░██ ░██    ░██    ░███    ░██░██
 )";
-static const char * ANVIL_VERSION = "0.2.0";
-static const int  CONFIG_VERSION  = 2;
-static std::atomic<bool> g_interrupted{false};
-static void signal_handler(int) {
-    g_interrupted.store(true);
-}
-
-// RAII wrappers for llama objects
+static const char*ANVIL_VERSION="0.2.1";
+static const int CONFIG_VERSION=2;
+static std::atomic<bool>g_interrupted{false};
+static void signal_handler(int){g_interrupted.store(true,std::memory_order_relaxed);}
 struct LlamaModel {
     llama_model* p = nullptr;
     explicit LlamaModel(llama_model* p_ = nullptr) : p(p_) {}
@@ -105,13 +99,12 @@ struct LlamaSampler {
         if (this != &o) { if (p) llama_sampler_free(p); p = o.p; o.p = nullptr; }
         return *this;
     }
-    void reset(llama_sampler* p_) { if (p) llama_sampler_free(p); p = p_; }
+    void reset(llama_sampler*p_){if(p_!=p){if(p)llama_sampler_free(p);p=p_;}}
     llama_sampler* get() const { return p; }
     operator llama_sampler*() const { return p; }
     explicit operator bool() const { return p != nullptr; }
 };
-
-// Safe numeric parsing helpers
+struct LlamaBackend{LlamaBackend(){llama_backend_init();}~LlamaBackend(){llama_backend_free();}};
 static bool parse_int(const std::string& s, int& out) {
     try {
         if (s.empty()) return false;
@@ -159,7 +152,7 @@ static const KVTypeOption KV_OPTIONS[] = {
     { "turbo3 (TurboQuant 3-bit)", GGML_TYPE_TURBO3_0,  "turbo3" },
     { "turbo2 (TurboQuant 2-bit)", GGML_TYPE_TURBO2_0,  "turbo2" },
 };
-static const int KV_OPTIONS_COUNT = 5;
+
 struct KVPreset {
     const char * label;
     int k_idx;
@@ -172,26 +165,10 @@ static const KVPreset KV_PRESETS[] = {
     { "No Compress   (K=f16,    V=f16)     1x    baseline",    0, 0 },
     { "Custom...",                                              -1, -1 },
 };
-static const int KV_PRESET_COUNT = 5;
-static ggml_type kv_type_from_name(const std::string & name) {
-    for (int i = 0; i < KV_OPTIONS_COUNT; i++) {
-        if (name == KV_OPTIONS[i].short_name) return KV_OPTIONS[i].type;
-    }
-    return GGML_TYPE_F16;
-}
-static const char * kv_type_short(ggml_type t) {
-    for (int i = 0; i < KV_OPTIONS_COUNT; i++) {
-        if (KV_OPTIONS[i].type == t) return KV_OPTIONS[i].short_name;
-    }
-    return "f16";
-}
-static int kv_type_index(ggml_type t) {
-    for (int i = 0; i < KV_OPTIONS_COUNT; i++) {
-        if (KV_OPTIONS[i].type == t) return i;
-    }
-    return 0;
-}
-struct GPUInfo {
+
+static ggml_type kv_type_from_name(const std::string&name){for(int i=0;i<(int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0]));i++){if(name==KV_OPTIONS[i].short_name)return KV_OPTIONS[i].type;}fprintf(stderr,"\033[33mwarning: unknown kv type '%s', using f16\033[0m\n",name.c_str());return GGML_TYPE_F16;}
+static const char*kv_type_short(ggml_type t){for(int i=0;i<(int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0]));i++){if(KV_OPTIONS[i].type==t)return KV_OPTIONS[i].short_name;}return"f16";}
+struct GPUInfo{
     std::string name;
     std::string vendor;
     uint64_t vram_mb = 0;
@@ -209,8 +186,7 @@ struct HWInfo {
 #ifdef __APPLE__
 static void detect_gpus_macos(HWInfo & hw) {
     CFMutableDictionaryRef matching = IOServiceMatching("IOGPU");
-    io_iterator_t iter;
-    kern_return_t kr = IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iter);
+    io_iterator_t iter;     mach_port_t mp;IOMainPort(MACH_PORT_NULL,&mp);kern_return_t kr = IOServiceGetMatchingServices(mp, matching, &iter);
     if (kr != KERN_SUCCESS) return;
     io_object_t device;
     while ((device = IOIteratorNext(iter)) != 0) {
@@ -226,13 +202,7 @@ static void detect_gpus_macos(HWInfo & hw) {
 }
 #endif
 #ifdef __linux__
-static void run_cmd(const char * cmd, std::string & out) {
-    FILE * pipe = popen(cmd, "r");
-    if (!pipe) return;
-    char buf[512];
-    while (fgets(buf, sizeof(buf), pipe)) out += buf;
-    pclose(pipe);
-}
+static void run_cmd(const char*cmd,std::string&out){FILE*pipe=popen(cmd,"r");if(!pipe)return;size_t cap=256;char*buf=(char*)malloc(cap);if(!buf){pclose(pipe);return;}while(1){if(!fgets(buf,(int)cap,pipe))break;out+=buf;size_t len=strlen(buf);if(len>0&&buf[len-1]=='\n')continue;cap*=2;char*tmp=(char*)realloc(buf,cap);if(!tmp)break;buf=tmp;}free(buf);pclose(pipe);}
 static void detect_gpus_linux(HWInfo & hw) {
     {
         std::string out;
@@ -245,9 +215,10 @@ static void detect_gpus_linux(HWInfo & hw) {
                 if (line.empty()) continue;
                 GPUInfo gpu;
                 gpu.vendor = "NVIDIA";
-                gpu.is_discrete = true;
-                auto comma = line.rfind(',');
-                if (comma != std::string::npos) {
+                gpu.is_discrete = true;auto comma=line.rfind(',');
+std::string after;if(comma!=std::string::npos)after=line.substr(comma+1);
+bool lastIsNum=!after.empty();for(char c:after)if(!isdigit(c)&&c!=' '){lastIsNum=false;break;}
+if(comma!=std::string::npos&&lastIsNum){
                     gpu.name = line.substr(0, comma);
                     while (!gpu.name.empty() && gpu.name.back() == ' ') gpu.name.pop_back();
                     std::string vram_str = line.substr(comma + 1);
@@ -319,8 +290,8 @@ static void detect_gpus_windows(HWInfo & hw) {
             } else {
                 gpu.name = "Unknown";
             }
-            gpu.vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
-            gpu.is_discrete = (desc.VendorId == 0x10DE);
+            gpu.vram_mb = (desc.DedicatedVideoMemory > desc.SharedSystemMemory ? desc.DedicatedVideoMemory : desc.SharedSystemMemory) / (1024 * 1024);
+            gpu.is_discrete = (desc.VendorId == 0x10DE || desc.VendorId == 0x1002);
             if (desc.VendorId == 0x10DE)      gpu.vendor = "NVIDIA";
             else if (desc.VendorId == 0x1002)  gpu.vendor = "AMD";
             else if (desc.VendorId == 0x8086)  gpu.vendor = "Intel";
@@ -353,12 +324,13 @@ static HWInfo probe_hw() {
     hw.arch = "unknown";
 #endif
     hw.cpu_threads = (int)std::thread::hardware_concurrency();
-    if (hw.cpu_threads <= 0) hw.cpu_threads = 4;
+    if (hw.cpu_threads <= 0) hw.cpu_threads = 0;
 #ifdef __APPLE__
     {
-        char buf[256];
-        size_t len = sizeof(buf);
-        if (sysctlbyname("machdep.cpu.brand_string", buf, &len, nullptr, 0) == 0) {
+        std::string buf(256, '\0');
+        size_t len = buf.size();
+        if (sysctlbyname("machdep.cpu.brand_string", &buf[0], &len, nullptr, 0) == 0) {
+            buf.resize(strlen(buf.c_str()));
             hw.cpu = buf;
             hw.apple_silicon = (hw.cpu.find("Apple") != std::string::npos);
         }
@@ -389,9 +361,7 @@ static HWInfo probe_hw() {
         std::ifstream f("/proc/meminfo");
         std::string line;
         while (std::getline(f, line)) {
-            if (line.find("MemTotal") != std::string::npos) {
-                uint64_t kb = 0;
-                sscanf(line.c_str(), "MemTotal: %" SCNu64 " kB", &kb);
+            if (line.find("MemTotal") != std::string::npos) {uint64_t kb=0;if(sscanf(line.c_str(),"MemTotal: %" SCNu64 " kB",&kb)!=1)kb=0;
                 hw.ram_bytes = kb * 1024;
                 break;
             }
@@ -417,20 +387,11 @@ static HWInfo probe_hw() {
 #endif
     return hw;
 }
-static int derive_ngl(const HWInfo & hw) {
-    if (hw.apple_silicon) return 99;
-    for (const auto & gpu : hw.gpus) {
-        if (gpu.is_discrete && gpu.vram_mb >= 4096) return 99;
-    }
-    for (const auto & gpu : hw.gpus) {
-        if (gpu.vram_mb >= 4096) return 99;
-    }
-    return 0;
-}
+static int derive_ngl(const HWInfo & hw, int n_layers) {if (hw.apple_silicon) return n_layers > 0 ? n_layers : -1;if (n_layers > 0) return n_layers;if (!hw.gpus.empty()) return -1;return 0;}
 struct AnvilConfig {
     int         version    = CONFIG_VERSION;
-    int         ngl        = 99;
-    int         n_ctx      = 8192;
+    int ngl=-1;
+    int n_ctx=0;
     int         n_threads  = 0;  
     float       temp       = 0.8f;
     bool        flash_attn = true;
@@ -451,57 +412,8 @@ static std::string config_path() {
 static std::string sessions_dir() {
     return config_dir() + "/sessions";
 }
-static void write_config(const AnvilConfig & cfg) {
-    namespace fs = std::filesystem;
-    fs::create_directories(config_dir());
-    std::ofstream f(config_path());
-    if (!f) {
-        fprintf(stderr, "\033[33mwarning: could not write config to %s\033[0m\n", config_path().c_str());
-        return;
-    }
-    f << "{\n";
-    f << "  \"version\": "    << cfg.version    << ",\n";
-    f << "  \"ngl\": "        << cfg.ngl        << ",\n";
-    f << "  \"n_ctx\": "      << cfg.n_ctx      << ",\n";
-    f << "  \"n_threads\": "  << cfg.n_threads  << ",\n";
-    f << "  \"temp\": "       << cfg.temp       << ",\n";
-    f << "  \"flash_attn\": " << (cfg.flash_attn ? "true" : "false") << ",\n";
-    f << "  \"mtp\": "        << (cfg.mtp ? "true" : "false") << ",\n";
-    f << "  \"triattn\": "    << (cfg.triattn ? "true" : "false") << ",\n";
-    f << "  \"type_k\": \""   << kv_type_short(cfg.type_k) << "\",\n";
-    f << "  \"type_v\": \""   << kv_type_short(cfg.type_v) << "\",\n";
-    f << "  \"model\": \""    << cfg.model      << "\"\n";
-    f << "}\n";
-}
-static std::string json_get(const std::string & json, const std::string & key) {
-    std::string search = "\"" + key + "\"";
-    auto pos = json.find(search);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + search.size());
-    if (pos == std::string::npos) return "";
-    pos++;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r')) pos++;
-    if (pos >= json.size()) return "";
-    if (json[pos] == '"') {
-        pos++;
-        std::string result;
-        while (pos < json.size() && json[pos] != '"') {
-            if (json[pos] == '\\' && pos + 1 < json.size()) {
-                pos++;
-                result += json[pos];
-            } else {
-                result += json[pos];
-            }
-            pos++;
-        }
-        return result;
-    }
-    auto end = pos;
-    while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != '\n' && json[end] != '\r') end++;
-    std::string val = json.substr(pos, end - pos);
-    while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
-    return val;
-}
+static void write_config(const AnvilConfig&cfg){namespace fs=std::filesystem;fs::create_directories(config_dir());std::ofstream f(config_path());if(!f){fprintf(stderr,"\033[33mwarning: could not write config to %s\033[0m\n",config_path().c_str());return;}auto esc=[](const std::string&s){std::string r;for(char c:s){if(c=='\\')r+="\\\\";else if(c=='"')r+="\\\"";else if(c=='\n')r+="\\n";else if(c=='\r')r+="\\r";else if(c=='\t')r+="\\t";else r+=c;}return r;};f<<"{\n";f<<"  \"version\": "<<cfg.version<<",\n";f<<"  \"ngl\": "<<cfg.ngl<<",\n";f<<"  \"n_ctx\": "<<cfg.n_ctx<<",\n";f<<"  \"n_threads\": "<<cfg.n_threads<<",\n";f<<"  \"temp\": "<<cfg.temp<<",\n";f<<"  \"flash_attn\": "<<(cfg.flash_attn?"true":"false")<<",\n";f<<"  \"mtp\": "<<(cfg.mtp?"true":"false")<<",\n";f<<"  \"triattn\": "<<(cfg.triattn?"true":"false")<<",\n";f<<"  \"type_k\": \""<<kv_type_short(cfg.type_k)<<"\",\n";f<<"  \"type_v\": \""<<kv_type_short(cfg.type_v)<<"\",\n";f<<"  \"model\": \""<<esc(cfg.model)<<"\"\n";f<<"}\n";}
+static std::string json_get(const std::string&json,const std::string&key){std::string search="\""+key+"\"";auto pos=json.find(search);if(pos==std::string::npos)return"";pos=json.find(':',pos+search.size());if(pos==std::string::npos)return"";pos++;while(pos<json.size()&&(json[pos]==' '||json[pos]=='\t'||json[pos]=='\n'||json[pos]=='\r'))pos++;if(pos>=json.size())return"";if(json[pos]=='"'){pos++;std::string result;while(pos<json.size()&&json[pos]!='"'){if(json[pos]=='\\'&&pos+1<json.size()){pos++;switch(json[pos]){case'n':result+='\n';break;case't':result+='\t';break;case'r':result+='\r';break;case'u':{if(pos+4<json.size()){int cp=0;for(int j=0;j<4;j++){pos++;cp<<=4;char h=json[pos];if(h>='0'&&h<='9')cp|=h-'0';else if(h>='a'&&h<='f')cp|=h-'a'+10;else if(h>='A'&&h<='F')cp|=h-'A'+10;}if(cp<=0x7F)result+=(char)cp;else if(cp<=0x7FF){result+=(char)(0xC0|(cp>>6));result+=(char)(0x80|(cp&0x3F));}else{result+=(char)(0xE0|(cp>>12));result+=(char)(0x80|((cp>>6)&0x3F));result+=(char)(0x80|(cp&0x3F));}}break;}default:result+=json[pos];break;}}else{result+=json[pos];}pos++;}return result;}auto end=pos;while(end<json.size()&&json[end]!=','&&json[end]!='}'&&json[end]!='\n'&&json[end]!='\r')end++;std::string val=json.substr(pos,end-pos);while(!val.empty()&&(val.back()==' '||val.back()=='\t'))val.pop_back();return val;}
 static AnvilConfig load_config() {
     AnvilConfig cfg;
     std::ifstream f(config_path());
@@ -546,59 +458,28 @@ static bool config_exists() {
     std::ifstream f(config_path());
     return f.good();
 }
-struct CliArgs {
-    std::string model;
-    int   n_ctx         = 0;
-    int   ngl           = -1;
-    int   n_threads     = 0;
-    float temp          = -1;
-    bool  flash_attn    = false;
-    bool  no_flash_attn = false;
-    bool  mtp           = false;
-    bool  triattn       = false;
-    bool  help          = false;
-    bool  invalid       = false;
-    bool  version       = false;
-    std::string type_k;
-    std::string type_v;
-    std::string system_prompt;
-    std::string prompt;
-    std::string grammar;
-    int   max_tokens    = -1;   
+struct CliArgs{
+std::string model;
+int n_ctx=0;
+int ngl=-1;
+int n_threads=0;
+float temp=-1;
+bool flash_attn=false;
+bool no_flash_attn=false;
+bool mtp=false;
+bool triattn=false;
+bool help=false;
+bool invalid=false;
+bool version=false;
+bool setup=false;
+std::string type_k;
+std::string type_v;
+std::string system_prompt;
+std::string prompt;
+std::string grammar;
+int max_tokens=-1;
 };
-static void print_usage() {
-    printf("anvil %s — Forge anything.\n\n", ANVIL_VERSION);
-    printf("Usage:\n");
-    printf("  anvil run <model> [options]     Run a model with chat REPL\n");
-    printf("  anvil run <model> -p \"prompt\"   Single-shot generation\n");
-    printf("  anvil --help                    Show this help\n");
-    printf("  anvil --version                 Show version\n\n");
-    printf("Options:\n");
-    printf("  -c, --ctx <n>            Context size (default: 8192)\n");
-    printf("  -ngl, --n-gpu-layers <n> GPU layers to offload (default: auto)\n");
-    printf("  -t, --temp <f>           Sampling temperature (default: 0.8)\n");
-    printf("  --threads <n>            CPU threads (default: auto)\n");
-    printf("  --flash-attn             Enable flash attention (default: on)\n");
-    printf("  --no-flash-attn          Disable flash attention\n");
-    printf("  --type-k <type>          K cache type: f16|q8_0|turbo4|turbo3|turbo2\n");
-    printf("  --type-v <type>          V cache type: f16|q8_0|turbo4|turbo3|turbo2\n");
-    printf("  --mtp                    Enable MTP speculative decoding\n");
-    printf("  --triattn                Enable TriAttention KV eviction\n");
-    printf("  --grammar <file>         GBNF grammar file for constrained output\n");
-    printf("  -s, --system <text>      System prompt\n");
-    printf("  -p, --prompt <text>      User prompt (non-interactive mode)\n");
-    printf("  -n, --max-tokens <n>     Max tokens to generate (default: unlimited)\n\n");
-    printf("TurboQuant KV presets (from setup TUI):\n");
-    printf("TurboQuant KV presets (from setup TUI):\n");
-    printf("  Recommended:  K=turbo4 V=turbo3  (4.2x, ~1%% quality loss)\n");
-    printf("  Quality+:     K=q8_0   V=turbo3  (~3x,  <1%% quality loss)\n");
-    printf("  High Compression: K=turbo4 V=turbo2  (6.1x, ~3%% quality loss)\n\n");
-    printf("Examples:\n");
-    printf("  anvil run model.gguf\n");
-    printf("  anvil run model.gguf --ctx 131072 --ngl 99 --type-k q8_0 --type-v turbo3\n");
-    printf("  anvil run model.gguf -p \"Explain quantum computing\" -n 200\n");
-    printf("  anvil run model.gguf --grammar json.gbnf -p \"List 3 colors\"\n");
-}
+static void print_usage(){printf("anvil %s — Forge anything.\n\n",ANVIL_VERSION);printf("Usage:\n");printf("  anvil run <model> [options]     Run a model with chat REPL\n");printf("  anvil run <model> -p \"prompt\"   Single-shot generation\n");printf("  anvil --help                    Show this help\n");printf("  anvil --version                 Show version\n");printf("  anvil --setup                   Re-run hardware setup TUI\n\n");printf("Options:\n");printf("  -c, --ctx <n>            Context size (default: auto from model)\n");printf("  -ngl, --n-gpu-layers <n> GPU layers to offload (default: auto)\n");printf("  -t, --temp <f>           Sampling temperature (default: 0.8)\n");printf("  --threads <n>            CPU threads (default: auto)\n");printf("  --flash-attn             Enable flash attention (default: on)\n");printf("  --no-flash-attn          Disable flash attention\n");printf("  --type-k <type>          K cache type: f16|q8_0|turbo4|turbo3|turbo2\n");printf("  --type-v <type>          V cache type: f16|q8_0|turbo4|turbo3|turbo2\n");printf("  --mtp                    Enable MTP speculative decoding\n");printf("  --triattn                Enable TriAttention KV eviction\n");printf("  --grammar <file>         GBNF grammar file for constrained output\n");printf("  -s, --system <text>      System prompt\n");printf("  -p, --prompt <text>      User prompt (non-interactive mode)\n");printf("  -n, --max-tokens <n>     Max tokens to generate (default: unlimited)\n\n");printf("TurboQuant KV presets (from setup TUI):\n");printf("  Recommended:  K=turbo4 V=turbo3  (4.2x, ~1%% quality loss)\n");printf("  Quality+:     K=q8_0   V=turbo3  (~3x,  <1%% quality loss)\n");printf("  High Compression: K=turbo4 V=turbo2  (6.1x, ~3%% quality loss)\n\n");printf("Examples:\n");printf("  anvil run model.gguf\n");printf("  anvil run model.gguf --ctx 131072 --type-k q8_0 --type-v turbo3\n");printf("  anvil run model.gguf -p \"Explain quantum computing\" -n 200\n");printf("  anvil run model.gguf --grammar json.gbnf -p \"List 3 colors\"\n");}
 static CliArgs parse_args(int argc, char ** argv) {
     CliArgs a;
     if (argc < 2) { a.help = true; return a; }
@@ -608,6 +489,7 @@ static CliArgs parse_args(int argc, char ** argv) {
         std::string arg = argv[i];
         if      (arg == "--help" || arg == "-h")                          { a.help = true; }
         else if (arg == "--version")                                      { a.version = true; }
+        else if (arg == "--setup")                                        { a.setup = true; }
         else if ((arg == "-c" || arg == "--ctx") && i+1 < argc)           { if (!parse_int(argv[++i], a.n_ctx)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
         else if ((arg == "-ngl" || arg == "--ngl" || arg == "--n-gpu-layers") && i+1 < argc) { if (!parse_int(argv[++i], a.ngl)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
         else if ((arg == "-t" || arg == "--temp") && i+1 < argc)          { if (!parse_float(argv[++i], a.temp)) { fprintf(stderr, "error: invalid value for %s\n", arg.c_str()); a.invalid = true; a.help = true; } }
@@ -690,7 +572,7 @@ static std::string session_path() {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     char buf[64];
-    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&t));
+    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", std::localtime(&t));
     return sessions_dir() + "/" + std::string(buf) + ".md";
 }
 static void export_session(const std::vector<ChatMessage> & msgs, const std::string & path) {
@@ -709,10 +591,10 @@ static void export_session(const std::vector<ChatMessage> & msgs, const std::str
 }
 static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
     AnvilConfig cfg;
-    cfg.ngl = derive_ngl(hw);
-    cfg.n_ctx = 8192;
+    cfg.ngl = derive_ngl(hw, 0);
+    cfg.n_ctx = max_ctx > 0 ? max_ctx : 0;
     std::vector<int> ctx_options;
-    for (int c = 2048; c <= max_ctx; c *= 2) ctx_options.push_back(c);
+    for (int c = 1; c > 0 && c <= max_ctx; c *= 2) ctx_options.push_back(c);
     ctx_options.push_back(0); 
     int custom_idx = (int)ctx_options.size() - 1;
     int ctx_sel = 0;
@@ -725,10 +607,10 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
         else ctx_labels.push_back(std::to_string(c) + " tokens");
     }
     std::vector<std::string> kv_preset_labels;
-    for (int i = 0; i < KV_PRESET_COUNT; i++)
+    for (int i = 0; i < (int)(sizeof(KV_PRESETS)/sizeof(KV_PRESETS[0])); i++)
         kv_preset_labels.push_back(KV_PRESETS[i].label);
     std::vector<std::string> kv_type_labels;
-    for (int i = 0; i < KV_OPTIONS_COUNT; i++)
+    for (int i = 0; i < (int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0])); i++)
         kv_type_labels.push_back(KV_OPTIONS[i].label);
     std::vector<std::string> fa_labels   = {"on (recommended)", "off"};
     std::vector<std::string> temp_labels = {"0.7 (focused)", "0.8 (balanced)", "0.9 (creative)", "1.0 (wild)"};
@@ -739,7 +621,7 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
     int temp_sel      = 1;
     bool custom_kv    = false;
     int menu_idx = 0;
-    int menu_count = 4;
+    int menu_count = 4+2;
     std::vector<std::string> hw_lines;
     hw_lines.push_back("CPU  : " + hw.cpu);
     hw_lines.push_back("RAM  : " + std::to_string(hw.ram_bytes / (1024ULL * 1024 * 1024)) + " GB");
@@ -824,13 +706,13 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
             switch (menu_idx) {
                 case 0: cycle(ctx_sel, (int)ctx_labels.size(), -1); break;
                 case 1:
-                    cycle(kv_preset_sel, KV_PRESET_COUNT, -1);
-                    custom_kv = (kv_preset_sel == KV_PRESET_COUNT - 1);
+                    cycle(kv_preset_sel, (int)(sizeof(KV_PRESETS)/sizeof(KV_PRESETS[0])), -1);
+                    custom_kv = (kv_preset_sel == (int)(sizeof(KV_PRESETS)/sizeof(KV_PRESETS[0])) - 1);
                     break;
                 case 2: cycle(fa_sel, (int)fa_labels.size(), -1); break;
                 case 3: cycle(temp_sel, (int)temp_labels.size(), -1); break;
-                case 4: cycle(kv_k_sel, KV_OPTIONS_COUNT, -1); break;
-                case 5: cycle(kv_v_sel, KV_OPTIONS_COUNT, -1); break;
+                case 4: cycle(kv_k_sel, (int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0])), -1); break;
+                case 5: cycle(kv_v_sel, (int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0])), -1); break;
             }
             return true;
         }
@@ -838,13 +720,13 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
             switch (menu_idx) {
                 case 0: cycle(ctx_sel, (int)ctx_labels.size(), 1); break;
                 case 1:
-                    cycle(kv_preset_sel, KV_PRESET_COUNT, 1);
-                    custom_kv = (kv_preset_sel == KV_PRESET_COUNT - 1);
+                    cycle(kv_preset_sel, (int)(sizeof(KV_PRESETS)/sizeof(KV_PRESETS[0])), 1);
+                    custom_kv = (kv_preset_sel == (int)(sizeof(KV_PRESETS)/sizeof(KV_PRESETS[0])) - 1);
                     break;
                 case 2: cycle(fa_sel, (int)fa_labels.size(), 1); break;
                 case 3: cycle(temp_sel, (int)temp_labels.size(), 1); break;
-                case 4: cycle(kv_k_sel, KV_OPTIONS_COUNT, 1); break;
-                case 5: cycle(kv_v_sel, KV_OPTIONS_COUNT, 1); break;
+                case 4: cycle(kv_k_sel, (int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0])), 1); break;
+                case 5: cycle(kv_v_sel, (int)(sizeof(KV_OPTIONS)/sizeof(KV_OPTIONS[0])), 1); break;
             }
             return true;
         }
@@ -858,8 +740,8 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
         std::string input;
         std::getline(std::cin, input);
         if (!parse_int(input, cfg.n_ctx) || cfg.n_ctx <= 0) {
-            fprintf(stderr, "\033[33mwarning: invalid context size '%s', using default 8192\033[0m\n", input.c_str());
-            cfg.n_ctx = 8192;
+            fprintf(stderr, "\033[33mwarning: invalid context size '%s', using auto\033[0m\n", input.c_str());
+            cfg.n_ctx = max_ctx > 0 ? max_ctx : 0;
         }
     } else {
         cfg.n_ctx = ctx_options[ctx_sel];
@@ -880,28 +762,25 @@ static AnvilConfig run_setup_tui(const HWInfo & hw, int max_ctx) {
     return cfg;
 }
 static bool validate_gguf(const std::string & path) {
-    FILE * f = fopen(path.c_str(), "rb");
+    std::ifstream f(path, std::ios::binary);
     if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz < 16) { fclose(f); return false; }
     char magic[4];
-    bool ok = (fread(magic, 1, 4, f) == 4 && memcmp(magic, "GGUF", 4) == 0);
-    fclose(f);
-    return ok;
+    f.read(magic, 4);
+    return f.gcount() == 4 && memcmp(magic, "GGUF", 4) == 0;
 }
 static std::string token_to_str(const llama_vocab * vocab, llama_token token) {
-    char buf[256];
-    int n = llama_token_to_piece(vocab, token, buf, sizeof(buf) - 1, 0, true);
+    int n = llama_token_to_piece(vocab, token, nullptr, 0, 0, true);
     if (n < 0) return "";
-    buf[n] = '\0';
-    return std::string(buf);
+    std::string s(n, '\0');
+    llama_token_to_piece(vocab, token, &s[0], n + 1, 0, true);
+    return s;
 }
 static void print_ctx_bar(int used, int total) {
     if (total <= 0) return;
     float pct = (float)used / (float)total;
-    int bar_width = 30;
+    const char* cols = getenv("COLUMNS");
+    int bar_width = cols ? atoi(cols) / 2 : 0;
+    if (bar_width <= 0) return;
     int filled = (int)(pct * bar_width);
     if (filled > bar_width) filled = bar_width;
     const char * color;
@@ -1183,9 +1062,10 @@ static int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
             if (user_input == "/model") {
                 printf("\n\033[1;36m── Model Info ──\033[0m\n");
                 printf("  file       : %s\n", cli.model.c_str());
-                char arch_buf[256];
-                llama_model_desc(model, arch_buf, sizeof(arch_buf));
-                printf("  arch       : %s\n", arch_buf);
+                std::string arch_buf(256, '\0');
+                llama_model_desc(model, &arch_buf[0], arch_buf.size());
+                arch_buf.resize(strlen(arch_buf.c_str()));
+                printf("  arch       : %s\n", arch_buf.c_str());
                 printf("  trained ctx: %d\n", n_ctx_train);
                 printf("  encoder    : %s\n", has_encoder ? "yes" : "no");
                 printf("  decoder    : %s\n", has_decoder ? "yes" : "no");
@@ -1288,7 +1168,7 @@ int main(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
     signal(SIGINT, signal_handler);
     llama_log_set([](enum ggml_log_level level, const char * text, void *) {
-        if (level >= GGML_LOG_LEVEL_ERROR) fprintf(stderr, "%s", text);
+        if (level >= GGML_LOG_LEVEL_WARN) fprintf(stderr, "%s", text);
     }, nullptr);
     CliArgs cli = parse_args(argc, argv);
     if (cli.invalid) { print_usage(); return 1; }
@@ -1306,15 +1186,16 @@ int main(int argc, char ** argv) {
     HWInfo hw = probe_hw();
     AnvilConfig cfg;
     llama_backend_init();
-    int max_ctx = 262144;
+    int n_layers = 0;
+    int max_ctx = 0;
     {
         llama_model_params mparams = llama_model_default_params();
         mparams.n_gpu_layers = 0;
         mparams.vocab_only = true;
         LlamaModel meta_model(llama_model_load_from_file(cli.model.c_str(), mparams));
         if (meta_model) {
+            n_layers = llama_model_n_layer(meta_model);
             max_ctx = llama_model_n_ctx_train(meta_model);
-            if (max_ctx <= 0) max_ctx = 262144;
         }
     }
     if (!config_exists()) {
@@ -1336,9 +1217,9 @@ int main(int argc, char ** argv) {
                 gpu.is_discrete ? " [discrete]" : "");
     }
     if (cli.n_ctx > 0)         cfg.n_ctx = cli.n_ctx;
-    else if (cfg.n_ctx == 0)   cfg.n_ctx = 8192;
+    if (cfg.n_ctx <= 0 && max_ctx > 0) cfg.n_ctx = max_ctx;
     if (cli.ngl >= 0)          cfg.ngl = cli.ngl;
-    else if (cfg.ngl == 0)     cfg.ngl = derive_ngl(hw);
+    else if (cfg.ngl < 0)     cfg.ngl = derive_ngl(hw, 0);
     if (cli.temp >= 0)         cfg.temp = cli.temp;
     if (cli.n_threads > 0)     cfg.n_threads = cli.n_threads;
     if (cli.flash_attn)        cfg.flash_attn = true;
@@ -1348,13 +1229,7 @@ int main(int argc, char ** argv) {
     if (!cli.type_k.empty())   cfg.type_k = kv_type_from_name(cli.type_k);
     if (!cli.type_v.empty())   cfg.type_v = kv_type_from_name(cli.type_v);
     cfg.model = cli.model;
-    bool has_overrides = cli.n_ctx > 0 || cli.ngl >= 0 || cli.temp >= 0 ||
-                         cli.n_threads > 0 || cli.flash_attn || cli.no_flash_attn ||
-                         cli.mtp || cli.triattn ||
-                         !cli.type_k.empty() || !cli.type_v.empty();
-    if (has_overrides) {
-        write_config(cfg);
-    }
+    write_config(cfg);
     int rc = run_chat(cli, cfg, hw);
     llama_backend_free();
     return rc;

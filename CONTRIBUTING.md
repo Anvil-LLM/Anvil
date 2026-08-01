@@ -24,7 +24,7 @@ bash tests/smoke.sh
 
 ## Coding style
 
-- Keep the core runtime in a single translation unit (`src/anvil.cpp`).
+- Keep related code colocated. Split into modules when a function exceeds ~200 lines.
 - Use RAII for resource management.
 - Never use `std::stoi`/`std::stof` without validation; use the existing
   `parse_int`/`parse_float` helpers.
