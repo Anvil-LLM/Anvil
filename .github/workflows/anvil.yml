@@ -52,7 +52,7 @@ jobs:
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release
       - name: Check Vulkan linkage (Linux)
         if: runner.os == 'Linux'
         run: |
