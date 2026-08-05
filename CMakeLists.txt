@@ -37,6 +37,8 @@ add_executable(anvil
     src/anvil.cpp
 )
 target_include_directories(anvil PRIVATE src ${LLAMA_DIR}/include ${LLAMA_DIR}/ggml/include)
+# Vendored headers (nlohmann/json) as SYSTEM: their warnings stay out of our -Wall output.
+target_include_directories(anvil PRIVATE SYSTEM ${LLAMA_DIR}/vendor)
 target_link_libraries(anvil PRIVATE llama ggml ftxui::ftxui)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(anvil PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-unused-parameter)

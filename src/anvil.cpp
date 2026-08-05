@@ -37,6 +37,8 @@
 #include <iostream>
 #include <ctime>
 #include <cinttypes>
+#include <map>
+#include <nlohmann/json.hpp>
 
 // ──── src/common.hpp ────
 
@@ -227,6 +229,7 @@ struct AnvilConfig {
     ggml_type type_k     = GGML_TYPE_Q8_0;
     ggml_type type_v     = GGML_TYPE_TURBO3_0;
     std::string model;
+    std::string system_prompt;   // per-run system prompt (from CLI or profile)
 };
 
 inline std::string config_dir() {
@@ -297,7 +300,10 @@ struct GenStats {
 
 
 struct CliArgs {
+    std::string sub;                    // "run" (default) | models | profile | rm | pull
+    std::vector<std::string> sub_args;  // raw args for subcommands
     std::string model;
+    std::string friendly;               // registry display name, when resolved
     int         n_ctx       = 0;
     int         ngl         = -1;
     int         n_threads   = 0;
@@ -308,6 +314,7 @@ struct CliArgs {
     bool        flash_attn  = false;
     bool        no_flash_attn = false;
     bool        mtp         = false;
+    bool        save_profile = false;   // persist CLI overrides into the model profile
     bool        help        = false;
     bool        invalid     = false;
     bool        version     = false;
@@ -336,6 +343,14 @@ void print_usage() {
     printf("Usage:\n");
     printf("  anvil run <model> [options]     Run a model with chat REPL\n");
     printf("  anvil run <model> -p \"prompt\"   Single-shot generation\n");
+    printf("  anvil <model> [options]         Run (model name or file path)\n");
+    printf("  anvil models                    List registered models\n");
+    printf("  anvil models import <file.gguf> [--name <name>]\n");
+    printf("  anvil profile <name>            Show a model's persistent profile\n");
+    printf("  anvil profile <name> set k=v .. Save profile settings\n");
+    printf("  anvil rm <name> [--yes]         Unregister a model\n");
+    printf("  anvil pull ollama:<name>[:tag]  Pull from the Ollama registry\n");
+    printf("  anvil pull hf:<repo>[:file]     Pull from HuggingFace\n");
     printf("  anvil --help                    Show this help\n");
     printf("  anvil --version                 Show version\n");
     printf("  anvil --setup                   Re-run hardware setup TUI\n\n");
@@ -355,7 +370,12 @@ void print_usage() {
     printf("  --grammar <file>         GBNF grammar file for constrained output\n");
     printf("  -s, --system <text>      System prompt\n");
     printf("  -p, --prompt <text>      User prompt (non-interactive mode)\n");
-    printf("  -n, --max-tokens <n>     Max tokens to generate (default: unlimited)\n\n");
+    printf("  -n, --max-tokens <n>     Max tokens to generate (default: unlimited)\n");
+    printf("      --save                Persist CLI overrides into the model's profile\n\n");
+    printf("Model registry:\n");
+    printf("  <model> may be a friendly name (registered via pull/import) or a file path.\n");
+    printf("  Per-model settings live in ~/.anvil/models.json (profiles).\n");
+    printf("  Precedence: CLI flags > model profile > global config.\n\n");
     printf("TurboQuant KV presets (from setup TUI):\n");
     printf("  Recommended:  K=turbo4 V=turbo3  (4.2x, ~1%% quality loss)\n");
     printf("  Quality+:     K=q8_0   V=turbo3  (~3x,  <1%% quality loss)\n");
@@ -399,7 +419,16 @@ static bool set_float(const std::string & arg_name, const std::string & value,
 
 CliArgs parse_args(int argc, char ** argv) {
     CliArgs a;
-    if (argc < 2) { a.help = true; return a; }
+    // Bare invocation (no args) is a usage error (exit 1); an explicit --help
+    // still exits 0. Standard CLI convention (git, docker, clang, ...).
+    if (argc < 2) { a.invalid = true; a.help = true; return a; }
+    // Subcommands keep their raw arguments for the dispatcher in main().
+    const std::string first = argv[1];
+    if (first == "models" || first == "profile" || first == "rm" || first == "pull") {
+        a.sub = first;
+        for (int i = 2; i < argc; i++) a.sub_args.emplace_back(argv[i]);
+        return a;
+    }
     int i = 1;
     if (i < argc && std::string(argv[i]) == "run") i++;
     for (; i < argc; i++) {
@@ -434,6 +463,7 @@ CliArgs parse_args(int argc, char ** argv) {
         else if (arg == "--type-k" && i + 1 < argc)                       { a.type_k = argv[++i]; }
         else if (arg == "--type-v" && i + 1 < argc)                       { a.type_v = argv[++i]; }
         else if (arg == "--mtp")                                          { a.mtp = true; }
+        else if (arg == "--save")                                         { a.save_profile = true; }
         else if (arg == "--grammar" && i + 1 < argc)                      { a.grammar = argv[++i]; }
         else if ((arg == "-s" || arg == "--system") && i + 1 < argc)      { a.system_prompt = argv[++i]; }
         else if ((arg == "-p" || arg == "--prompt") && i + 1 < argc)      { a.prompt = argv[++i]; }
@@ -661,6 +691,577 @@ AnvilConfig load_config() {
 bool config_exists() {
     std::ifstream f(config_path());
     return f.good();
+}
+
+// ──── src/models.hpp ────
+// Friendly-name model registry (~/.anvil/models.json) with persistent
+// per-model profiles. Zero new dependencies: nlohmann/json is vendored in
+// the backend; writes are atomic (tmp + rename), matching config.json.
+
+inline std::string models_json_path() { return config_dir() + "/models.json"; }
+inline std::string models_dir()       { return config_dir() + "/models"; }
+
+// Declared here (defined in hardware.cpp below) because import validates GGUF.
+bool validate_gguf(const std::string & path);
+
+struct ModelProfile {
+    // Explicitly-set keys only; anything absent inherits the global config.
+    std::map<std::string, nlohmann::json> settings;
+
+    nlohmann::json to_json() const { return nlohmann::json(settings); }
+
+    static ModelProfile from_json(const nlohmann::json & j) {
+        ModelProfile p;
+        if (j.is_object()) {
+            for (auto it = j.begin(); it != j.end(); ++it) p.settings[it.key()] = it.value();
+        }
+        return p;
+    }
+
+    bool empty() const { return settings.empty(); }
+    void clear()       { settings.clear(); }
+    void set(const std::string & k, const nlohmann::json & v) { settings[k] = v; }
+    bool unset(const std::string & k) { return settings.erase(k) > 0; }
+
+    // Apply explicitly-set values onto a config; returns the number applied.
+    // Tolerant of hand-edited JSON: a wrong-typed value warns and is skipped
+    // rather than crashing the run (nlohmann throws json::type_error).
+    int apply_to(AnvilConfig & cfg) const {
+        int n = 0;
+        for (const auto & [k, v] : settings) {
+            try {
+                if      (k == "n_ctx")          { cfg.n_ctx = v.get<int>();        n++; }
+                else if (k == "ngl")            { cfg.ngl = v.get<int>();          n++; }
+                else if (k == "n_threads")      { cfg.n_threads = v.get<int>();    n++; }
+                else if (k == "temp")           { cfg.temp = v.get<float>();       n++; }
+                else if (k == "top_k")          { cfg.top_k = v.get<int>();        n++; }
+                else if (k == "top_p")          { cfg.top_p = v.get<float>();      n++; }
+                else if (k == "repeat_penalty") { cfg.repeat_penalty = v.get<float>(); n++; }
+                else if (k == "flash_attn")     { cfg.flash_attn = v.get<bool>();  n++; }
+                else if (k == "mtp")            { cfg.mtp = v.get<bool>();         n++; }
+                else if (k == "type_k")         { cfg.type_k = kv_type_from_name(v.get<std::string>()); n++; }
+                else if (k == "type_v")         { cfg.type_v = kv_type_from_name(v.get<std::string>()); n++; }
+                else if (k == "system_prompt")  { cfg.system_prompt = v.get<std::string>(); n++; }
+            } catch (const nlohmann::json::exception &) {
+                fprintf(stderr, "\033[33mwarning: skipping invalid profile key '%s' (wrong type)\033[0m\n", k.c_str());
+            }
+        }
+        return n;
+    }
+
+    static bool valid_key(const std::string & k) {
+        static const char * keys[] = {
+            "n_ctx", "ngl", "n_threads", "temp", "top_k", "top_p",
+            "repeat_penalty", "flash_attn", "mtp", "type_k", "type_v", "system_prompt"
+        };
+        for (const char * kk : keys) if (k == kk) return true;
+        return false;
+    }
+};
+
+struct ModelEntry {
+    std::string name;
+    std::string path;
+    std::string source = "local";   // local | ollama | ollama-local | hf
+    std::string source_id;          // e.g. library/llama3.2:3b or HF repo[:file]
+    uint64_t    size_bytes = 0;
+    std::string added;
+    std::string desc;               // GGUF architecture description
+    int64_t     trained_ctx = 0;
+    std::string chat_template;      // from Ollama metadata layers (if any)
+    std::string license;
+    std::string params_json;        // raw Ollama params blob (if any)
+    nlohmann::json gguf_meta;       // verbose GGUF header metadata
+    ModelProfile profile;
+
+    nlohmann::json to_json() const {
+        return {
+            {"name", name}, {"path", path}, {"source", source},
+            {"source_id", source_id}, {"size_bytes", size_bytes}, {"added", added},
+            {"desc", desc}, {"trained_ctx", trained_ctx},
+            {"chat_template", chat_template}, {"license", license},
+            {"params_json", params_json}, {"gguf_meta", gguf_meta},
+            {"settings", profile.to_json()},
+        };
+    }
+
+    static ModelEntry from_json(const nlohmann::json & j) {
+        ModelEntry e;
+        auto get = [&](const char * k, auto & out) {
+            if (j.contains(k)) {
+                try { out = j[k].get<std::decay_t<decltype(out)>>(); }
+                catch (const nlohmann::json::exception &) {}
+            }
+        };
+        get("name", e.name); get("path", e.path); get("source", e.source);
+        get("source_id", e.source_id); get("size_bytes", e.size_bytes);
+        get("added", e.added); get("desc", e.desc); get("trained_ctx", e.trained_ctx);
+        get("chat_template", e.chat_template); get("license", e.license);
+        get("params_json", e.params_json);
+        if (j.contains("gguf_meta") && j["gguf_meta"].is_object()) e.gguf_meta = j["gguf_meta"];
+        if (j.contains("settings")) e.profile = ModelProfile::from_json(j["settings"]);
+        return e;
+    }
+};
+
+// ──── src/models.cpp ────
+
+static std::string now_iso() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    char buf[32];
+    if (!std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t))) {
+        std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(t));
+    }
+    return buf;
+}
+
+static std::string expand_home(const std::string & p) {
+    if (p.size() > 1 && p[0] == '~' && (p[1] == '/' || p[1] == '\\')) {
+        const char * home = std::getenv("HOME");
+        if (home && home[0]) return std::string(home) + p.substr(1);
+    }
+    return p;
+}
+
+static std::string format_size(uint64_t bytes) {
+    char buf[32];
+    if (bytes >= 1073741824ULL)      std::snprintf(buf, sizeof(buf), "%.1f GB", static_cast<double>(bytes) / 1073741824.0);
+    else if (bytes >= 1048576ULL)    std::snprintf(buf, sizeof(buf), "%.1f MB", static_cast<double>(bytes) / 1048576.0);
+    else if (bytes >= 1024ULL)       std::snprintf(buf, sizeof(buf), "%.1f KB", static_cast<double>(bytes) / 1024.0);
+    else                             std::snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+    return buf;
+}
+
+// Safe filename from a friendly name (ollama:llama3.2:3b -> llama3.2-3b).
+static std::string slugify(const std::string & s) {
+    std::string out;
+    for (const char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) || c == '.' || c == '-' || c == '_') {
+            out += static_cast<char>(std::tolower(c));
+        } else if (c == ':' || c == '/' || c == ' ' || c == '@') {
+            out += '-';
+        }
+    }
+    while (out.size() > 1 && out.back() == '-') out.pop_back();
+    if (out.empty()) out = "model";
+    return out;
+}
+
+std::vector<ModelEntry> load_models() {
+    std::vector<ModelEntry> models;
+    std::ifstream f(models_json_path());
+    if (!f) return models;
+    nlohmann::json root;
+    try {
+        f >> root;
+        if (root.contains("models") && root["models"].is_array()) {
+            for (const auto & j : root["models"]) {
+                try { models.push_back(ModelEntry::from_json(j)); }
+                catch (const nlohmann::json::exception &) { /* skip malformed entry */ }
+            }
+        }
+    } catch (const nlohmann::json::exception & e) {
+        fprintf(stderr, "\033[33mwarning: %s is unreadable (%s); starting empty\033[0m\n",
+                models_json_path().c_str(), e.what());
+    }
+    return models;
+}
+
+bool save_models(const std::vector<ModelEntry> & models) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(config_dir(), ec);
+    if (ec) {
+        fprintf(stderr, "\033[33mwarning: could not create config dir %s\033[0m\n", config_dir().c_str());
+        return false;
+    }
+    nlohmann::json root;
+    root["version"] = 1;
+    root["models"] = nlohmann::json::array();
+    for (const auto & e : models) root["models"].push_back(e.to_json());
+
+    const std::string tmp = models_json_path() + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) {
+            fprintf(stderr, "\033[33mwarning: could not write %s\033[0m\n", tmp.c_str());
+            return false;
+        }
+        f << root.dump(2) << "\n";
+        f.flush();
+        if (!f) {
+            fprintf(stderr, "\033[33mwarning: failed writing %s\033[0m\n", tmp.c_str());
+            return false;
+        }
+    }
+    fs::rename(tmp, models_json_path(), ec);
+    if (ec) {
+        fprintf(stderr, "\033[33mwarning: could not rename %s into place: %s\033[0m\n",
+                models_json_path().c_str(), ec.message().c_str());
+        return false;
+    }
+    return true;
+}
+
+ModelEntry * find_model(std::vector<ModelEntry> & models, const std::string & name) {
+    for (auto & m : models) if (m.name == name) return &m;
+    return nullptr;
+}
+const ModelEntry * find_model(const std::vector<ModelEntry> & models, const std::string & name) {
+    for (const auto & m : models) if (m.name == name) return &m;
+    return nullptr;
+}
+
+// Verbose GGUF header metadata (vocab-only load: fast, no weights).
+struct ModelMeta {
+    std::string desc;
+    int64_t     trained_ctx = 0;
+    nlohmann::json gguf_meta;   // every GGUF header key/value (strings)
+};
+
+static ModelMeta read_model_meta(const std::string & path) {
+    ModelMeta meta;
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0;
+    mparams.vocab_only = true;
+    LlamaModel m(llama_model_load_from_file(path.c_str(), mparams));
+    if (!m) return meta;
+    meta.trained_ctx = llama_model_n_ctx_train(m);
+    const int32_t alen = llama_model_desc(m, nullptr, 0);
+    if (alen > 0) {
+        std::string buf(static_cast<size_t>(alen) + 1, '\0');
+        llama_model_desc(m, buf.data(), buf.size());
+        buf.resize(static_cast<size_t>(alen));
+        meta.desc = buf;
+    }
+    // Verbose metadata: capture every GGUF header key/value (strings only).
+    // The *_by_index functions are snprintf-style: query the size with a null
+    // buffer, then fill. Values can exceed 4 KB (chat templates), so a fixed
+    // stack buffer would truncate; the two-call pattern is exact and safe.
+    nlohmann::json meta_map = nlohmann::json::object();
+    const int32_t count = llama_model_meta_count(m);
+    if (count > 0 && count <= 4096) {
+        for (int32_t i = 0; i < count; i++) {
+            const int32_t klen = llama_model_meta_key_by_index(m, i, nullptr, 0);
+            if (klen <= 0 || klen > (1 << 20)) continue;
+            std::string key(static_cast<size_t>(klen) + 1, '\0');
+            if (llama_model_meta_key_by_index(m, i, key.data(), key.size()) < 0) continue;
+            key.resize(static_cast<size_t>(klen));
+
+            const int32_t vlen = llama_model_meta_val_str_by_index(m, i, nullptr, 0);
+            if (vlen < 0 || vlen > (1 << 20)) continue;
+            std::string val(static_cast<size_t>(vlen) + 1, '\0');
+            if (llama_model_meta_val_str_by_index(m, i, val.data(), val.size()) < 0) continue;
+            val.resize(static_cast<size_t>(vlen));
+            meta_map[key] = val;
+        }
+    }
+    meta.gguf_meta = std::move(meta_map);
+    return meta;
+}
+
+static bool valid_kv_name(const std::string & n) {
+    for (int i = 0; i < KV_OPTIONS_COUNT; i++) {
+        if (n == KV_OPTIONS[i].short_name) return true;
+    }
+    return false;
+}
+
+// Profile values reuse the same bounds as the CLI (set_int/set_float), so
+// `anvil profile x set temp=99` fails exactly like `--temp 99`.
+static bool parse_profile_value(const std::string & key, const std::string & val, ModelProfile & p) {
+    int iv = 0; float fv = 0.0f;
+    if (key == "n_ctx")      { if (!parse_int(val, iv) || iv < 1 || iv > MAX_CTX) return false; p.set(key, iv); return true; }
+    if (key == "ngl")        { if (!parse_int(val, iv) || iv < -1 || iv > 10000) return false; p.set(key, iv); return true; }
+    if (key == "n_threads")  { if (!parse_int(val, iv) || iv < 1 || iv > MAX_THREADS) return false; p.set(key, iv); return true; }
+    if (key == "top_k")      { if (!parse_int(val, iv) || iv < 0 || iv > MAX_TOP_K) return false; p.set(key, iv); return true; }
+    if (key == "temp")       { if (!parse_float(val, fv) || fv < 0.0f || fv > MAX_TEMP) return false; p.set(key, fv); return true; }
+    if (key == "top_p")      { if (!parse_float(val, fv) || fv < 0.0f || fv > 1.0f) return false; p.set(key, fv); return true; }
+    if (key == "repeat_penalty") { if (!parse_float(val, fv) || fv < 1.0f || fv > 100.0f) return false; p.set(key, fv); return true; }
+    if (key == "flash_attn" || key == "mtp") {
+        if (val != "true" && val != "false" && val != "1" && val != "0" && val != "on" && val != "off") return false;
+        p.set(key, (val == "true" || val == "1" || val == "on")); return true;
+    }
+    if (key == "type_k" || key == "type_v") {
+        if (!valid_kv_name(val)) return false;
+        p.set(key, val); return true;
+    }
+    if (key == "system_prompt") { p.set(key, val); return true; }
+    return false;
+}
+
+// ─── Name resolution ───────────────────────────────────────────────────────
+
+// True when the argument names a file (path-ish) rather than a registry name.
+static bool looks_like_file(const std::string & arg) {
+    if (arg.find('/') != std::string::npos || arg.find('\\') != std::string::npos) return true;
+    if (arg.size() > 5 && arg.compare(arg.size() - 5, 5, ".gguf") == 0) return true;
+    if (std::filesystem::exists(expand_home(arg))) return true;
+    return false;
+}
+
+// Resolve a `run` argument: registry name (friendly_out set) or a local file
+// (friendly_out left empty). Returns false when neither matches.
+bool resolve_model_arg(const std::string & arg, std::string & path_out, std::string & friendly_out) {
+    const std::vector<ModelEntry> models = load_models();
+    if (const ModelEntry * e = find_model(models, arg)) {
+        path_out = e->path;
+        friendly_out = e->name;
+        return true;
+    }
+    if (looks_like_file(arg)) {
+        path_out = expand_home(arg);
+        friendly_out.clear();
+        return true;
+    }
+    return false;
+}
+
+// ─── Commands ──────────────────────────────────────────────────────────────
+
+// Register a local file under a friendly name. Reuses an existing entry that
+// already points at the same file (canonical-path match) so running a file by
+// path never duplicates its registry entry under a second name.
+ModelEntry * auto_register(std::vector<ModelEntry> & models,
+                           const std::string & path, const std::string & friendly,
+                           const ModelMeta & meta) {
+    if (ModelEntry * existing = find_model(models, friendly)) return existing;
+    std::error_code ec;
+    const std::filesystem::path canon = std::filesystem::canonical(path, ec);
+    if (!ec) {
+        for (auto & m : models) {
+            std::error_code ec2;
+            const std::filesystem::path mcanon = std::filesystem::canonical(m.path, ec2);
+            if (!ec2 && mcanon == canon) return &m;
+        }
+    }
+    ModelEntry e;
+    e.name = friendly;
+    e.path = path;
+    e.source = "local";
+    e.added = now_iso();
+    const auto sz = std::filesystem::file_size(path, ec);
+    e.size_bytes = ec ? 0 : sz;
+    e.desc = meta.desc;
+    e.trained_ctx = meta.trained_ctx;
+    e.gguf_meta = meta.gguf_meta;
+    models.push_back(std::move(e));
+    return &models.back();
+}
+
+int cmd_rm(const std::vector<std::string> & args) {
+    if (args.empty()) {
+        fprintf(stderr, "usage: anvil rm <name> [--yes]\n");
+        return 1;
+    }
+    const std::string name = args[0];
+    bool delete_file = false;
+    for (size_t i = 1; i < args.size(); i++) {
+        if (args[i] == "--yes") delete_file = true;
+        else {
+            fprintf(stderr, "error: unknown option '%s'\n", args[i].c_str());
+            return 1;
+        }
+    }
+    std::vector<ModelEntry> models = load_models();
+    auto it = std::find_if(models.begin(), models.end(),
+                           [&](const ModelEntry & e) { return e.name == name; });
+    if (it == models.end()) {
+        fprintf(stderr, "error: no model named '%s'\n", name.c_str());
+        return 1;
+    }
+    const std::string path = it->path;
+    if (delete_file) {
+        std::error_code ec;
+        if (!std::filesystem::remove(path, ec)) {
+            fprintf(stderr, "warning: could not delete %s (%s)\n", path.c_str(), ec.message().c_str());
+        } else {
+            fprintf(stderr, "Deleted %s\n", path.c_str());
+        }
+    }
+    models.erase(it);
+    if (!save_models(models)) return 1;
+    printf("Removed '%s' from the registry.\n", name.c_str());
+    return 0;
+}
+
+int cmd_models(const std::vector<std::string> & args) {
+    if (args.empty()) {
+        const std::vector<ModelEntry> models = load_models();
+        if (models.empty()) {
+            printf("No models registered.\n");
+            printf("  anvil pull ollama:<name>[:tag]      pull from the Ollama registry\n");
+            printf("  anvil pull hf:<repo>[:file]         pull from HuggingFace\n");
+            printf("  anvil models import <file.gguf> [--name <name>]\n");
+            return 0;
+        }
+        printf("%-26s %-12s %-10s %-10s %s\n", "NAME", "SOURCE", "SIZE", "TRAINED", "PATH");
+        for (const auto & m : models) {
+            char trained[32];
+            if (m.trained_ctx > 0) std::snprintf(trained, sizeof(trained), "%lld", static_cast<long long>(m.trained_ctx));
+            else std::snprintf(trained, sizeof(trained), "-");
+            printf("%-26s %-12s %-10s %-10s %s\n", m.name.c_str(), m.source.c_str(),
+                   format_size(m.size_bytes).c_str(), trained, m.path.c_str());
+        }
+        return 0;
+    }
+
+    if (args[0] == "import") {
+        if (args.size() < 2) {
+            fprintf(stderr, "usage: anvil models import <file.gguf> [--name <name>]\n");
+            return 1;
+        }
+        std::string path = expand_home(args[1]);
+        std::string name;
+        for (size_t i = 2; i < args.size(); i++) {
+            if (args[i] == "--name" && i + 1 < args.size()) name = args[++i];
+            else {
+                fprintf(stderr, "error: unknown import option '%s'\n", args[i].c_str());
+                return 1;
+            }
+        }
+        if (!validate_gguf(path)) {
+            fprintf(stderr, "\033[31merror: '%s' is not a valid GGUF file\033[0m\n", path.c_str());
+            return 1;
+        }
+        std::error_code ec;
+        const std::filesystem::path canon = std::filesystem::canonical(path, ec);
+        if (!ec) path = canon.string();
+
+        std::vector<ModelEntry> models = load_models();
+        if (name.empty()) name = slugify(std::filesystem::path(path).stem().string());
+        if (find_model(models, name)) {
+            fprintf(stderr, "error: a model named '%s' is already registered\n", name.c_str());
+            return 1;
+        }
+        ModelEntry e;
+        e.name = name;
+        e.path = path;
+        e.source = "local";
+        e.added = now_iso();
+        e.size_bytes = std::filesystem::file_size(path, ec);
+        if (ec) e.size_bytes = 0;
+        const ModelMeta meta = read_model_meta(path);
+        e.desc = meta.desc;
+        e.trained_ctx = meta.trained_ctx;
+        e.gguf_meta = meta.gguf_meta;
+        models.push_back(std::move(e));
+        if (!save_models(models)) return 1;
+        printf("Registered '%s' -> %s\n", name.c_str(), path.c_str());
+        printf("  run with: anvil run %s\n", name.c_str());
+        return 0;
+    }
+
+    if (args[0] == "rm" || args[0] == "remove") {
+        return cmd_rm(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
+    fprintf(stderr, "unknown 'models' subcommand '%s' (try: list, import, rm)\n", args[0].c_str());
+    return 1;
+}
+
+int cmd_profile(const std::vector<std::string> & args) {
+    if (args.empty()) {
+        fprintf(stderr, "usage: anvil profile <name> [set k=v ...] [unset k ...] [reset]\n");
+        return 1;
+    }
+    const std::string name = args[0];
+    std::vector<ModelEntry> models = load_models();
+    ModelEntry * e = find_model(models, name);
+    if (!e) {
+        fprintf(stderr, "error: no model named '%s'\n", name.c_str());
+        return 1;
+    }
+
+    auto is_cmd = [](const std::string & s) { return s == "set" || s == "unset" || s == "reset"; };
+    bool changed = false;
+    bool show = true;
+    for (size_t i = 1; i < args.size(); i++) {
+        const std::string & a = args[i];
+        if (a == "set") {
+            show = false;
+            const size_t before = i;
+            while (i + 1 < args.size() && !is_cmd(args[i + 1])) {
+                const std::string kv = args[++i];
+                const size_t eq = kv.find('=');
+                if (eq == std::string::npos) {
+                    fprintf(stderr, "error: expected key=value, got '%s'\n", kv.c_str());
+                    return 1;
+                }
+                const std::string key = kv.substr(0, eq);
+                const std::string val = kv.substr(eq + 1);
+                if (!ModelProfile::valid_key(key)) {
+                    fprintf(stderr, "error: unknown profile key '%s' (valid: n_ctx ngl n_threads temp top_k top_p repeat_penalty flash_attn mtp type_k type_v system_prompt)\n", key.c_str());
+                    return 1;
+                }
+                if (!parse_profile_value(key, val, e->profile)) {
+                    fprintf(stderr, "error: invalid value '%s' for '%s'\n", val.c_str(), key.c_str());
+                    return 1;
+                }
+                changed = true;
+            }
+            if (i == before) {
+                fprintf(stderr, "usage: anvil profile %s set key=value ...\n", name.c_str());
+                return 1;
+            }
+        } else if (a == "unset") {
+            show = false;
+            const size_t before = i;
+            while (i + 1 < args.size() && !is_cmd(args[i + 1])) {
+                const std::string key = args[++i];
+                if (!ModelProfile::valid_key(key)) {
+                    fprintf(stderr, "error: unknown profile key '%s'\n", key.c_str());
+                    return 1;
+                }
+                if (e->profile.unset(key)) changed = true;
+            }
+            if (i == before) {
+                fprintf(stderr, "usage: anvil profile %s unset key ...\n", name.c_str());
+                return 1;
+            }
+        } else if (a == "reset") {
+            show = false;
+            e->profile.clear();
+            changed = true;
+        } else {
+            fprintf(stderr, "error: unknown profile command '%s' (try: set, unset, reset)\n", a.c_str());
+            return 1;
+        }
+    }
+
+    if (show) {
+        printf("Profile: %s  (path: %s)\n", e->name.c_str(), e->path.c_str());
+        if (e->profile.empty()) {
+            printf("  (empty — inherits global config defaults)\n");
+        } else {
+            for (const auto & [k, v] : e->profile.settings) {
+                std::string s;
+                if (v.is_string())            s = v.get<std::string>();
+                else if (v.is_number_float()) { char b[32]; std::snprintf(b, sizeof(b), "%.4g", v.get<double>()); s = b; }
+                else if (v.is_boolean())       s = v.get<bool>() ? "true" : "false";
+                else                          s = v.dump();
+                printf("  %-18s = %s\n", k.c_str(), s.c_str());
+            }
+        }
+        return 0;
+    }
+    if (changed) {
+        if (!save_models(models)) return 1;
+        printf("Profile updated for '%s'.\n", e->name.c_str());
+    }
+    return 0;
+}
+
+// ──── src/pull.hpp ────
+int cmd_pull(const std::vector<std::string> & args);
+
+// Phase 1 placeholder; real Ollama/HF pull lands in the pull update.
+int cmd_pull(const std::vector<std::string> & args) {
+    fprintf(stderr, "error: 'pull' is not built yet. Coming soon: anvil pull ollama:<name> / hf:<repo>.\n");
+    (void)args;
+    return 1;
 }
 // ──── src/hardware.hpp ────
 
@@ -1344,7 +1945,8 @@ int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     if (grammar_active) fprintf(stderr, "  grammar     : \033[32m%s\033[0m\n", cli.grammar.c_str());
 
     printf("\033[1;33m%s\033[0m", ANVIL_LOGO);
-    printf("  model   : %s\n", cli.model.c_str());
+    if (cli.friendly.empty()) printf("  model   : %s\n", cli.model.c_str());
+    else                      printf("  model   : %s  (%s)\n", cli.friendly.c_str(), cli.model.c_str());
     printf("  backend : GPU layers=%d | flash=%s | threads=%d\n",
            cfg.ngl, cfg.flash_attn ? "on" : "off", cparams.n_threads);
     printf("  ctx     : %u tokens\n", cparams.n_ctx);
@@ -1365,9 +1967,10 @@ int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
     const char * tmpl = llama_model_chat_template(model, nullptr);
     const bool add_bos = llama_vocab_get_add_bos(vocab);
     const llama_token bos_id = llama_vocab_bos(vocab);
+    const std::string sys_prompt = !cli.system_prompt.empty() ? cli.system_prompt : cfg.system_prompt;
 
-    if (!cli.system_prompt.empty()) {
-        history.push_back({"system", cli.system_prompt});
+    if (!sys_prompt.empty()) {
+        history.push_back({"system", sys_prompt});
     }
 
     // Render the full conversation (add_ass=false stops before the assistant
@@ -1525,8 +2128,8 @@ int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
                 history.clear();
                 llama_memory_clear(mem, true);
                 prev_tokens.clear();
-                if (!cli.system_prompt.empty()) {
-                    history.push_back({"system", cli.system_prompt});
+                if (!sys_prompt.empty()) {
+                    history.push_back({"system", sys_prompt});
                 }
                 total_tokens_generated = 0;
                 total_gen_time = 0.0;
@@ -1573,6 +2176,7 @@ int run_chat(const CliArgs & cli, AnvilConfig cfg, const HWInfo & hw) {
 
             if (user_input == "/model") {
                 printf("\n\033[1;36m── Model Info ──\033[0m\n");
+                if (!cli.friendly.empty()) printf("  name       : %s\n", cli.friendly.c_str());
                 printf("  file       : %s\n", cli.model.c_str());
                 const int32_t alen = llama_model_desc(model, nullptr, 0);
                 if (alen > 0) {
@@ -1697,16 +2301,40 @@ int main(int argc, char ** argv) {
         if (level >= GGML_LOG_LEVEL_WARN) fprintf(stderr, "%s", text);
     }, nullptr);
 
-    const CliArgs cli = parse_args(argc, argv);
+    CliArgs cli = parse_args(argc, argv);
     if (cli.invalid) { print_usage(); return 1; }
     if (cli.help)    { print_usage(); return 0; }
     if (cli.version) { printf("anvil %s\n", ANVIL_VERSION); return 0; }
+
+    // Subcommand dispatch (registry / profile / pull / rm).
+    if (cli.sub == "models")  return cmd_models(cli.sub_args);
+    if (cli.sub == "profile") return cmd_profile(cli.sub_args);
+    if (cli.sub == "rm")      return cmd_rm(cli.sub_args);
+    if (cli.sub == "pull")    return cmd_pull(cli.sub_args);
 
     if (cli.model.empty()) {
         fprintf(stderr, "error: no model specified\n\n");
         print_usage();
         return 1;
     }
+
+    // Resolve a friendly registry name or a local file path.
+    std::string resolved_path;
+    std::string friendly;
+    if (!resolve_model_arg(cli.model, resolved_path, friendly)) {
+        fprintf(stderr, "\033[31merror: '%s' is not a file and not a registered model\033[0m\n",
+                cli.model.c_str());
+        fprintf(stderr, "  Try: anvil pull ollama:%s | anvil pull hf:<repo> | anvil models import <file.gguf> --name %s\n",
+                cli.model.c_str(), cli.model.c_str());
+        return 1;
+    }
+    cli.model = resolved_path;
+    if (friendly.empty()) {
+        // Local file: derive a friendly name for the registry.
+        friendly = slugify(std::filesystem::path(cli.model).stem().string());
+    }
+    cli.friendly = friendly;
+
     if (!validate_gguf(cli.model)) {
         fprintf(stderr, "\033[31merror: '%s' is not a valid GGUF file\033[0m\n", cli.model.c_str());
         return 1;
@@ -1714,17 +2342,9 @@ int main(int argc, char ** argv) {
 
     const HWInfo hw = probe_hw();
 
-    // Read model metadata (vocab only) to pick a sensible default context.
-    int max_ctx = 0;
-    {
-        llama_model_params mparams = llama_model_default_params();
-        mparams.n_gpu_layers = 0;
-        mparams.vocab_only = true;
-        LlamaModel meta_model(llama_model_load_from_file(cli.model.c_str(), mparams));
-        if (meta_model) {
-            max_ctx = llama_model_n_ctx_train(meta_model);
-        }
-    }
+    // Read GGUF header metadata (vocab only) for context defaults + registry.
+    const ModelMeta meta = read_model_meta(cli.model);
+    const int max_ctx = static_cast<int>(meta.trained_ctx);
 
     LlamaBackend backend;
 
@@ -1749,7 +2369,35 @@ int main(int argc, char ** argv) {
                 gpu.is_discrete ? " [discrete]" : "");
     }
 
-    // CLI overrides win over saved config.
+    // Registry: auto-register local files and apply the model's persistent
+    // profile (explicit profile keys win over the global config).
+    std::vector<ModelEntry> models = load_models();
+    ModelEntry * entry = find_model(models, friendly);
+    if (!entry) {
+        entry = auto_register(models, cli.model, friendly, meta);
+        if (!save_models(models)) return 1;
+        fprintf(stderr, "Registered local model as '%s' (see: anvil models)\n", friendly.c_str());
+    }
+    if (entry) {
+        // The entry may pre-exist under a different name (canonical-path match).
+        if (cli.friendly != entry->name) cli.friendly = entry->name;
+        friendly = entry->name;
+        if (!std::filesystem::exists(entry->path)) {
+            fprintf(stderr, "\033[33mwarning: registered model file missing: %s\033[0m\n", entry->path.c_str());
+        }
+        // Refresh metadata + file size from disk (pulls may update the file).
+        entry->desc = meta.desc;
+        entry->trained_ctx = meta.trained_ctx;
+        if (!meta.gguf_meta.empty()) entry->gguf_meta = meta.gguf_meta;
+        std::error_code ec;
+        const auto sz = std::filesystem::file_size(cli.model, ec);
+        if (!ec) entry->size_bytes = sz;
+        entry->profile.apply_to(cfg);
+        fprintf(stderr, "Profile '%s': %d setting(s) applied\n", friendly.c_str(),
+                static_cast<int>(entry->profile.settings.size()));
+    }
+
+    // CLI overrides win over profile and global config.
     if (cli.n_ctx > 0)          cfg.n_ctx = cli.n_ctx;
     if (cfg.n_ctx <= 0 && max_ctx > 0) cfg.n_ctx = max_ctx;
     if (cli.ngl >= 0)           cfg.ngl = cli.ngl;
@@ -1765,7 +2413,33 @@ int main(int argc, char ** argv) {
     if (!cli.type_k.empty())    cfg.type_k = kv_type_from_name(cli.type_k);
     if (!cli.type_v.empty())    cfg.type_v = kv_type_from_name(cli.type_v);
 
+    // --save: persist explicit CLI overrides into the model's profile.
+    if (cli.save_profile && entry) {
+        ModelProfile & p = entry->profile;
+        if (cli.n_ctx > 0)               p.set("n_ctx", cli.n_ctx);
+        if (cli.ngl >= 0)                p.set("ngl", cli.ngl);
+        if (cli.n_threads > 0)           p.set("n_threads", cli.n_threads);
+        if (cli.temp >= 0)               p.set("temp", cli.temp);
+        if (cli.top_k >= 0)              p.set("top_k", cli.top_k);
+        if (cli.top_p >= 0)              p.set("top_p", cli.top_p);
+        if (cli.repeat_penalty >= 0)     p.set("repeat_penalty", cli.repeat_penalty);
+        if (cli.flash_attn)              p.set("flash_attn", true);
+        if (cli.no_flash_attn)           p.set("flash_attn", false);
+        if (cli.mtp)                     p.set("mtp", true);
+        // Normalize KV names so a bad --type-k can't poison the profile.
+        if (!cli.type_k.empty() && valid_kv_name(cli.type_k)) p.set("type_k", cli.type_k);
+        if (!cli.type_v.empty() && valid_kv_name(cli.type_v)) p.set("type_v", cli.type_v);
+        if (!cli.system_prompt.empty())  p.set("system_prompt", cli.system_prompt);
+        save_models(models);
+        fprintf(stderr, "Saved %zu setting(s) to profile '%s'\n", p.settings.size(), friendly.c_str());
+    } else if (entry) {
+        save_models(models);   // persist refreshed metadata
+    }
+
     cfg.model = cli.model;
+    if (cfg.system_prompt.empty() && !cli.system_prompt.empty()) {
+        cfg.system_prompt = cli.system_prompt;
+    }
     write_config(cfg);
 
     const int rc = run_chat(cli, cfg, hw);
