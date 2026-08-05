@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Syntax checks
         run: |
           sh -n docs/anvil-nvidia-install.sh
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Resolve all driver branches and verify .run URLs
         run: |
           set -e
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run the exact debian toolchain step
         run: |
           set -e
@@ -95,7 +95,7 @@ jobs:
     steps:
       - name: Install git for checkout
         run: dnf -y install git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: --check with real fedora os-release (fake GPU, no GPU in CI)
         run: |
           set -e
