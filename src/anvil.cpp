@@ -32,6 +32,14 @@
 #include <glob.h>        // sysfs GPU probe (Linux only, harmless elsewhere)
 #endif
 #ifdef _WIN32
+// Must precede <windows.h>: it defines min/max macros that break FTXUI and
+// the standard library (FTXUI #errors on this), and bloats compile time.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <dxgi.h>
 #endif
@@ -2008,12 +2016,6 @@ bool validate_gguf(const std::string & path);
 #ifdef __linux__
 #endif
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #ifdef _MSC_VER
 #pragma comment(lib, "dxgi.lib")
 #endif
