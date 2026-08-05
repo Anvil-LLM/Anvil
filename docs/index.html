@@ -931,6 +931,7 @@ tokens/sec: 127.4 · prompt tokens: 842 · total tokens: 4 891</pre>
     <div class="tabpanel active" id="t-curl">
       <pre id="src-curl">curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh</pre>
       <p class="note">Detects your OS + arch, grabs a pre-built binary, falls back to building from source. Installs to <b>/usr/local/bin</b> and creates <b>~/.anvil</b>.</p>
+      <p class="note" style="margin-top:8px">On NVIDIA Linux it grabs the <b>CUDA build</b> (driver-only — no CUDA toolkit) and walks you through the one-time driver install via <b>anvil-nvidia-install.sh</b>.</p>
     </div>
     <div class="tabpanel" id="t-src">
       <pre><span class="cm"># clone anvil + the TurboQuant llama.cpp fork</span>

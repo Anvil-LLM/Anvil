@@ -30,6 +30,24 @@ aarch64|arm64) ARN=aarch64 ;;
 *) die "unsupported architecture: $ARCH" ;;
 esac
 ASSET="anvil-${OSN}-${ARN}"
+
+# NVIDIA CUDA prebuilt (Linux x86_64 only). Detection is additive: the plain
+# CPU/Vulkan asset always remains the fallback if the CUDA one is missing.
+NVIDIA=0
+CUDA_ASSET=""
+detect_nvidia_gpu() {
+    if has_cmd lspci; then
+        if lspci -nn 2>/dev/null | grep -qi '\[10de:'; then NVIDIA=1; return; fi
+        if lspci 2>/dev/null | grep -qi nvidia; then NVIDIA=1; return; fi
+    fi
+    for _v in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$_v" ] || continue
+        if [ "$(cat "$_v" 2>/dev/null)" = "0x10de" ]; then NVIDIA=1; return; fi
+    done
+}
+if [ "$OSN" = "linux" ] && [ "$ARN" = "x86_64" ]; then
+    detect_nvidia_gpu || true
+fi
 TMPDIR=${TMPDIR:-/tmp}
 TMP_BASE="${TMPDIR}/anvil-install-$$"
 mkdir -p "$TMP_BASE"
@@ -47,31 +65,87 @@ log "Latest release: $TAG"
 }
 verify_checksum() {
 _file=$1
+_asset=${2:-$ASSET}
 [ -n "$ANVIL_SKIP_CHECKSUM" ] && { log "Checksum verification skipped (ANVIL_SKIP_CHECKSUM set)."; return 0; }
 log "Verifying checksum..."
 # The tag endpoint lists every asset with its sha256 digest. Collapse the JSON
 # to one line, then pull the digest belonging to our asset name.
 _meta=$(http_get_stdout "${API_URL}/tags/${TAG}" 2>/dev/null | tr -d '\n')
-_digest=$(printf '%s' "$_meta" | sed -n "s/.*\"name\"[[:space:]]*:[[:space:]]*\"${ASSET}\"[^}]*\"digest\"[[:space:]]*:[[:space:]]*\"sha256:\([^\"]*\)\".*/\1/p" | head -1)
-if [ -z "$_digest" ]; then log "warning: no checksum available for ${ASSET}; skipping verification"; return 0; fi
+_digest=$(printf '%s' "$_meta" | sed -n "s/.*\"name\"[[:space:]]*:[[:space:]]*\"${_asset}\"[^}]*\"digest\"[[:space:]]*:[[:space:]]*\"sha256:\([^\"]*\)\".*/\1/p" | head -1)
+if [ -z "$_digest" ]; then log "warning: no checksum available for ${_asset}; skipping verification"; return 0; fi
 if has_cmd sha256sum; then _actual=$(sha256sum "$_file" | awk '{print $1}')
 elif has_cmd shasum; then _actual=$(shasum -a 256 "$_file" | awk '{print $1}')
 else log "warning: no sha256 tool available; skipping verification"; return 0; fi
-if [ "$_actual" != "$_digest" ]; then err "checksum mismatch for ${ASSET} (got $_actual, expected $_digest)"; return 1; fi
+if [ "$_actual" != "$_digest" ]; then err "checksum mismatch for ${_asset} (got $_actual, expected $_digest)"; return 1; fi
 log "Checksum OK (sha256:${_digest})"
 }
 
 install_binary() {
 resolve_tag
-URL="${REPO_URL}/releases/download/${TAG}/${ASSET}"
-TMP_BIN="${TMP_BASE}/anvil"
-log "Downloading ${ASSET}..."
-if ! http_get_file "$URL" "$TMP_BIN"; then err "prebuilt binary not available for ${ASSET} at ${TAG}"; return 1; fi
-if ! verify_checksum "$TMP_BIN"; then return 1; fi
-if ! "$TMP_BIN" --version >/dev/null 2>&1; then err "downloaded binary does not run on this system (missing libraries?)"; return 1; fi
-${PRIV}mv "$TMP_BIN" "$TARGET/anvil"
-${PRIV}chmod +x "$TARGET/anvil"
-log "Installed anvil ${TAG} -> ${TARGET}/anvil"
+# Prefer the CUDA prebuilt on NVIDIA Linux x86_64; the plain CPU/Vulkan asset
+# is the automatic fallback if the CUDA one is unavailable or won't run.
+for _asset in ${CUDA_ASSET:-} "$ASSET"; do
+    [ -n "$_asset" ] || continue
+    URL="${REPO_URL}/releases/download/${TAG}/${_asset}"
+    TMP_BIN="${TMP_BASE}/anvil"
+    log "Downloading ${_asset}..."
+    if ! http_get_file "$URL" "$TMP_BIN"; then
+        log "  ${_asset} unavailable at ${TAG}; trying fallback"
+        continue
+    fi
+    if ! verify_checksum "$TMP_BIN" "$_asset"; then
+        log "  checksum failed for ${_asset}; trying fallback"
+        continue
+    fi
+    if ! "$TMP_BIN" --version >/dev/null 2>&1; then
+        log "  ${_asset} does not run on this system (missing libraries?); trying fallback"
+        continue
+    fi
+    # Explicit failure guards: install_binary may be called in a context that
+    # suppresses set -e (e.g. "install_binary || exit 1"), so check each step.
+    if ! ${PRIV}mv "$TMP_BIN" "$TARGET/anvil"; then
+        err "could not write ${TARGET}/anvil (run with sudo, or pick a writable target)"
+        return 1
+    fi
+    ${PRIV}chmod +x "$TARGET/anvil"
+    log "Installed anvil ${TAG} (${_asset}) -> ${TARGET}/anvil"
+    return 0
+done
+err "no prebuilt binary worked for ${OSN}/${ARN} (tried: ${CUDA_ASSET:-none} ${ASSET})"
+return 1
+}
+
+# NVIDIA driver helper (downloads the installer, never runs it for you — the
+# privileged step stays one explicit sudo command the user types themselves).
+DRIVER_URL="https://raw.githubusercontent.com/${REPO}/main/docs/anvil-nvidia-install.sh"
+offer_nvidia_driver() {
+    [ "$OSN" = "linux" ] || return 0
+    [ "$NVIDIA" = 1 ] || return 0
+    if has_cmd nvidia-smi; then return 0; fi
+    log ""
+    log "NVIDIA GPU detected, but the NVIDIA driver is not installed."
+    log "anvil runs on CPU/Vulkan regardless, but the CUDA build needs the driver."
+    log "Install it with the anvil driver helper (distro packages, never .run files):"
+    log ""
+    log "  curl -fsSL -O ${DRIVER_URL}"
+    log "  chmod +x anvil-nvidia-install.sh"
+    log "  ./anvil-nvidia-install.sh --check      # report only, changes nothing"
+    log "  sudo ./anvil-nvidia-install.sh         # installs the driver"
+    log ""
+    if is_tty; then
+        printf "Download the driver installer into the current directory? [y/N]: "
+        read -r _yn || true
+        case "$_yn" in
+            [yY]*)
+                if http_get_file "$DRIVER_URL" ./anvil-nvidia-install.sh; then
+                    chmod +x ./anvil-nvidia-install.sh 2>/dev/null || true
+                    log "Saved ./anvil-nvidia-install.sh - inspect it, then run with sudo."
+                else
+                    log "Download failed - grab it manually from ${DRIVER_URL}"
+                fi
+                ;;
+        esac
+    fi
 }
 build_from_source() {
 has_cmd git || die "git is required to build from source"
@@ -83,12 +157,18 @@ git clone --recursive "$REPO_URL" "$SRC_DIR"
 log "Building anvil (this may take a few minutes)..."
 cmake -B "$SRC_DIR/build" -S "$SRC_DIR" -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "$SRC_DIR/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)" >/dev/null || die "build failed"
-${PRIV}cp "$SRC_DIR/build/anvil" "$TARGET/anvil"
+${PRIV}cp "$SRC_DIR/build/anvil" "$TARGET/anvil" || die "could not copy binary to ${TARGET}"
 ${PRIV}chmod +x "$TARGET/anvil"
 log "Built and installed anvil -> ${TARGET}/anvil"
 }
 choose_target() {
-if [ -n "$INSTALL_DIR" ]; then TARGET=$INSTALL_DIR; return; fi
+if [ -n "$INSTALL_DIR" ]; then
+    TARGET=$INSTALL_DIR
+    # Create/validate the target up front so the install step never hits a
+    # missing-directory mv failure deep in the flow.
+    ensure_target_writable "$TARGET" || die "cannot write to install target ${TARGET}"
+    return
+fi
 if is_tty; then
 log ""; log "Where should anvil be installed?"
 printf "  1) %s (needs sudo if not writable)\n" "$DEFAULT_DIR"
@@ -112,9 +192,24 @@ log "  export PATH=\"${TARGET}:\$PATH\"" ;;
 esac
 }
 main() {
+BUILD=0
+FORCE_NVIDIA=0
+# Preserve the externally-set ANVIL_BUILD env var (e.g. ANVIL_BUILD=1 curl ... | sh).
+[ -n "${ANVIL_BUILD:-}" ] && BUILD=1
+for _arg in "$@"; do
+    case "$_arg" in
+        --build|--source) BUILD=1 ;;
+        --nvidia) FORCE_NVIDIA=1 ;;
+    esac
+done
+if { [ "$NVIDIA" = 1 ] || [ "$FORCE_NVIDIA" = 1 ]; } && [ "$OSN" = "linux" ] && [ "$ARN" = "x86_64" ]; then
+    CUDA_ASSET="anvil-${OSN}-${ARN}-cuda"
+fi
 log ""; log "anvil installer"; log "Detected: ${OSN} / ${ARN}"
+if [ "$NVIDIA" = 1 ]; then log "  NVIDIA GPU detected - will prefer the CUDA build"; fi
+if [ "$FORCE_NVIDIA" = 1 ]; then log "  --nvidia: forcing the CUDA build"; fi
 choose_target; log "Install target: ${TARGET}"
-if [ -n "$ANVIL_BUILD" ] || [ "$1" = "--build" ] || [ "$1" = "--source" ]; then build_from_source
+if [ "$BUILD" = 1 ]; then build_from_source
 elif ! is_tty; then log "Non-interactive mode: trying prebuilt binary..."; install_binary || exit 1
 else
 log ""; log "What would you like to do?"
@@ -134,6 +229,7 @@ log "Config directory: ${HOME}/.anvil"
 log "Models directory: ${HOME}/.anvil/models"
 if "$TARGET/anvil" --version >/dev/null 2>&1; then log ""; log "anvil is ready. Go forge something."; log "  anvil --help"; log "  anvil run model.gguf"
 else die "installation completed, but ${TARGET}/anvil could not be executed."; fi
+offer_nvidia_driver
 ensure_path
 }
 main "$@"

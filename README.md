@@ -37,6 +37,32 @@ cmake --build build -j
 
 ---
 
+## NVIDIA / CUDA (Linux)
+
+On Linux x86_64 with an NVIDIA GPU, the installer automatically **prefers the
+CUDA prebuilt** (`anvil-linux-x86_64-cuda`) and falls back to the CPU/Vulkan
+build if it isn't available. The CUDA build needs **only the NVIDIA driver** —
+the CUDA runtime is bundled, so there's no CUDA toolkit to install.
+
+If the driver is missing, anvil points you at the driver helper
+(`docs/anvil-nvidia-install.sh`), which installs it from your distro's package
+manager — never a `.run` file:
+
+```bash
+curl -fsSL -O https://raw.githubusercontent.com/anvil-llm/anvil/main/docs/anvil-nvidia-install.sh
+chmod +x anvil-nvidia-install.sh
+./anvil-nvidia-install.sh --check      # report only, changes nothing
+sudo ./anvil-nvidia-install.sh         # installs the driver via apt/dnf/pacman/zypper
+```
+
+Force the CUDA build on NVIDIA hardware (or any x86_64 Linux):
+
+```bash
+curl -fsSL https://anvil-llm.github.io/anvil/install.sh | sh -s -- --nvidia
+```
+
+---
+
 ## Usage
 
 ### Run a model (chat REPL)
