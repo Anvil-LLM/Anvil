@@ -56,7 +56,14 @@ jobs:
           $installer = "$env:TEMP\vulkan-sdk-$version.exe"
           Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" `
             -OutFile $installer -TimeoutSec 600
-          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -NoNewWindow -PassThru -TimeoutSec 900
+          # WaitForExit (a .NET method, unlike Start-Process -TimeoutSec which
+          # only exists in PowerShell 7.4+) gives a hard 15-min bound so a
+          # wedged installer cannot hang the job.
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -NoNewWindow -PassThru
+          if (-not $p.WaitForExit(900000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw 'Vulkan SDK installer timed out after 15 minutes'
+          }
           if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer failed with exit code $($p.ExitCode)" }
           # Installer layout is C:\VulkanSDK\<version>; point VULKAN_SDK at the
           # versioned dir — ggml's find_package(Vulkan) uses it as a prefix path.
