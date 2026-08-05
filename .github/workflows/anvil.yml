@@ -36,7 +36,7 @@ jobs:
             flags: "-DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_SYCL=OFF -DGGML_OPENVINO=OFF -DGGML_OPENCL=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Install build deps (Linux)
@@ -46,11 +46,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Pinned release, NOT the 'latest' pointer: LunarG rotates the blob
+          # behind 'latest' and served an expired Azure blob (BlobNotFound),
+          # which hung this step for ~30 minutes on every prior run. A pinned
+          # version + hard timeouts fail fast instead of hanging.
+          $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
-          $installer = "$env:TEMP\vulkan-sdk.exe"
-          Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe' -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList '/S' -Wait -NoNewWindow -PassThru
-          echo "VULKAN_SDK=C:\VulkanSDK" >> $env:GITHUB_ENV
+          $version = '1.3.290.0'
+          $installer = "$env:TEMP\vulkan-sdk-$version.exe"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" `
+            -OutFile $installer -TimeoutSec 600
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -NoNewWindow -PassThru -TimeoutSec 900
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer failed with exit code $($p.ExitCode)" }
+          # Installer layout is C:\VulkanSDK\<version>; point VULKAN_SDK at the
+          # versioned dir — ggml's find_package(Vulkan) uses it as a prefix path.
+          $sdkRoot = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -eq $version } | Select-Object -First 1
+          if (-not $sdkRoot) { throw "Vulkan SDK $version not found under C:\VulkanSDK after install" }
+          "VULKAN_SDK=$($sdkRoot.FullName)" >> $env:GITHUB_ENV
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - name: Build
