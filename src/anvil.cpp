@@ -928,14 +928,13 @@ static ModelMeta read_model_meta(const std::string & path) {
     mparams.vocab_only = true;
     LlamaModel m(llama_model_load_from_file(path.c_str(), mparams));
     if (!m) return meta;
-    meta.trained_ctx = llama_model_n_ctx_train(m);
-    const int32_t alen = llama_model_desc(m, nullptr, 0);
-    if (alen > 0) {
-        std::string buf(static_cast<size_t>(alen) + 1, '\0');
-        llama_model_desc(m, buf.data(), buf.size());
-        buf.resize(static_cast<size_t>(alen));
-        meta.desc = buf;
-    }
+
+    // NOTE: this fork's loader returns from the hparams phase on vocab_only
+    // (llama-model.cpp: "if (hparams.vocab_only) return;"), so
+    // llama_model_desc()/llama_model_n_ctx_train() are empty for vocab-only
+    // models. The gguf_kv map is still fully populated, so we derive the
+    // description and trained context from the captured header instead. This
+    // also fixes the auto-ctx-from-model path, which was silently always 0.
     // Verbose metadata: capture every GGUF header key/value (strings only).
     // The *_by_index functions are snprintf-style: query the size with a null
     // buffer, then fill. Values can exceed 4 KB (chat templates), so a fixed
@@ -958,6 +957,35 @@ static ModelMeta read_model_meta(const std::string & path) {
             meta_map[key] = val;
         }
     }
+
+    auto meta_str = [&](const std::string & key) -> std::string {
+        if (meta_map.contains(key) && meta_map[key].is_string()) {
+            return meta_map[key].get<std::string>();
+        }
+        return "";
+    };
+    const std::string arch = meta_str("general.architecture");
+    std::string name = meta_str("general.name");
+    if (name.empty()) name = meta_str("general.basename");
+
+    // Trained context: general.context_length (modern) or <arch>.context_length.
+    std::string ctx = meta_str("general.context_length");
+    if (ctx.empty() && !arch.empty()) ctx = meta_str(arch + ".context_length");
+    if (!ctx.empty()) {
+        // Values may look like "8192" or "[8192]"; grab the first integer.
+        size_t i = 0;
+        while (i < ctx.size() && !std::isdigit(static_cast<unsigned char>(ctx[i]))) i++;
+        if (i < ctx.size()) {
+            errno = 0;
+            char * end = nullptr;
+            const long long v = std::strtoll(ctx.c_str() + i, &end, 10);
+            if (errno != ERANGE && end != ctx.c_str() + i && v > 0) meta.trained_ctx = v;
+        }
+    }
+
+    if (!name.empty()) meta.desc = arch.empty() ? name : name + " (arch: " + arch + ")";
+    else if (!arch.empty()) meta.desc = arch;
+
     meta.gguf_meta = std::move(meta_map);
     return meta;
 }
@@ -1257,11 +1285,465 @@ int cmd_profile(const std::vector<std::string> & args) {
 // ──── src/pull.hpp ────
 int cmd_pull(const std::vector<std::string> & args);
 
-// Phase 1 placeholder; real Ollama/HF pull lands in the pull update.
+// ──── src/pull.cpp ────
+// Model downloader: Ollama registry (OCI-style) + import from a local ollama
+// install. HTTP goes through curl (wget fallback) exactly like install.sh — no
+// new link-time dependencies, so the single binary stays dependency-free.
+//
+// Ollama models ARE GGUF: the `application/vnd.ollama.image.model` layer is
+// the weights file. "Converting" from ollama therefore means extracting the
+// GGUF blob plus its metadata layers (chat template, params, license) into a
+// persistent anvil profile.
+
+namespace {
+
+constexpr const char * OLLAMA_BASE = "https://registry.ollama.ai/v2";
+
+// Registry components are strictly [A-Za-z0-9._-]; validating before building
+// shell commands keeps the curl/system() invocation injection-safe on every OS.
+bool valid_registry_component(const std::string & s) {
+    if (s.empty() || s.size() > 128) return false;
+    for (const char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(c) || c == '.' || c == '-' || c == '_')) return false;
+    }
+    return true;
+}
+
+// Unique temp path for capturing command output (portable, no mkstemp).
+std::string pull_tmp_path() {
+    static std::atomic<unsigned> counter{0};
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec) dir = config_dir();
+    return (dir / ("anvil-cmd-" + std::to_string(counter.fetch_add(1)) +
+                   "-" + std::to_string(std::chrono::steady_clock::now()
+                                            .time_since_epoch().count()) + ".tmp")).string();
+}
+
+// Runs a command and returns its stdout (empty on failure).
+std::string capture(const std::string & cmd) {
+    const std::string tmp = pull_tmp_path();
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+    const std::string full = cmd + " > \"" + tmp + "\" 2>/dev/null";
+    std::string out;
+    if (system(full.c_str()) == 0) {
+        std::ifstream f(tmp, std::ios::binary);
+        out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    std::filesystem::remove(tmp, ec);
+    return out;
+}
+
+// curl with a wget fallback, returning the response body. --max-time bounds
+// metadata fetches so a stalled endpoint fails fast instead of hanging.
+std::string http_get(const std::string & url, const std::string & extra_flags = "") {
+    std::string out = capture("curl -fsSL --max-time 60 " + extra_flags + " \"" + url + "\"");
+    if (out.empty()) {
+        out = capture("wget -qO- --timeout=60 \"" + url + "\"");
+    }
+    return out;
+}
+
+// Downloads url to out_path atomically: writes <out>.part (resumable with
+// --continue-at), verifies the caller's checksum later, then renames. Returns
+// 0 on success; the .part is kept on failure so retries resume.
+// expected_size > 0 guards against a stale .part from an aborted run of a
+// *different* asset (e.g. a tag re-uploaded): a partial larger than the
+// target is corrupt, so it is discarded and the download restarts.
+int http_download(const std::string & url, const std::string & out_path,
+                  uint64_t expected_size = 0) {
+    const std::string part = out_path + ".part";
+    if (expected_size > 0) {
+        std::error_code st;
+        const uint64_t cur = std::filesystem::file_size(part, st);
+        if (!st && cur > expected_size) {
+            fprintf(stderr, "  stale partial (%llu B > expected %llu B); restarting\n",
+                    static_cast<unsigned long long>(cur),
+                    static_cast<unsigned long long>(expected_size));
+            std::filesystem::remove(part, st);
+        }
+    }
+    // --retry/--connect-timeout keep flaky or stalled connections from hanging
+    // a multi-GB download indefinitely.
+    std::string cmd = "curl --fail --location --progress-bar --retry 3 --retry-delay 2 "
+                      "--connect-timeout 20 --continue-at - -o \"" +
+                      part + "\" \"" + url + "\"";
+    const int rc = system(cmd.c_str());
+    if (rc != 0) {
+        fprintf(stderr, "\033[31mpull failed (curl exit %d). Partial download kept at %s — retry to resume.\033[0m\n",
+                rc, part.c_str());
+        return -1;
+    }
+    std::error_code ec;
+    std::filesystem::rename(part, out_path, ec);
+    if (ec) {
+        fprintf(stderr, "\033[31merror: could not finalize %s (%s)\033[0m\n",
+                out_path.c_str(), ec.message().c_str());
+        return -1;
+    }
+    return 0;
+}
+
+// sha256 hex of a file, via sha256sum or shasum (install.sh conventions).
+// Empty string when no tool is available.
+std::string sha256_of(const std::string & path) {
+    std::string hex = capture("sha256sum \"" + path + "\" | awk '{print $1}'");
+    while (!hex.empty() && (hex.back() == '\n' || hex.back() == '\r')) hex.pop_back();
+    if (!hex.empty()) return hex;
+    hex = capture("shasum -a 256 \"" + path + "\" | awk '{print $1}'");
+    while (!hex.empty() && (hex.back() == '\n' || hex.back() == '\r')) hex.pop_back();
+    return hex;
+}
+
+struct OllamaLayer {
+    std::string media_type;
+    std::string digest;
+    uint64_t    size = 0;
+};
+
+struct OllamaManifest {
+    std::vector<OllamaLayer> layers;
+    uint64_t total_size = 0;
+};
+
+bool parse_ollama_manifest(const std::string & json, OllamaManifest & out) {
+    try {
+        const nlohmann::json j = nlohmann::json::parse(json);
+        if (!j.contains("layers") || !j["layers"].is_array()) return false;
+        for (const auto & l : j["layers"]) {
+            OllamaLayer layer;
+            if (l.contains("mediaType")) layer.media_type = l["mediaType"].get<std::string>();
+            if (l.contains("digest"))    layer.digest    = l["digest"].get<std::string>();
+            if (l.contains("size"))      layer.size      = l["size"].get<uint64_t>();
+            out.layers.push_back(std::move(layer));
+        }
+        return !out.layers.empty();
+    } catch (const nlohmann::json::exception &) {
+        return false;
+    }
+}
+
+// Maps Ollama params blob keys onto the model profile (in-range only, same
+// bounds as the CLI). The rest of the blob is kept raw in params_json.
+void apply_ollama_params(const nlohmann::json & params, ModelProfile & p) {
+    if (!params.is_object()) return;
+    auto num = [&](const char * k, float & out) -> bool {
+        if (!params.contains(k) || !params[k].is_number()) return false;
+        out = params[k].get<float>();
+        return true;
+    };
+    float f = 0.0f;
+    if (num("temperature", f) && f >= 0.0f && f <= MAX_TEMP)     p.set("temp", f);
+    if (num("top_p", f) && f >= 0.0f && f <= 1.0f)               p.set("top_p", f);
+    if (num("repeat_penalty", f) && f >= 1.0f && f <= 100.0f)    p.set("repeat_penalty", f);
+    if (num("top_k", f)) {
+        const int iv = static_cast<int>(f);
+        if (iv >= 0 && iv <= MAX_TOP_K) p.set("top_k", iv);
+    }
+    if (num("num_ctx", f)) {
+        const int iv = static_cast<int>(f);
+        if (iv >= 1 && iv <= MAX_CTX) p.set("n_ctx", iv);
+    }
+}
+
+// Splits `[ns/]name[:tag]` (ollama/OCI convention), validating every part.
+// Returns false on invalid input.
+bool parse_ollama_spec(const std::string & spec,
+                       std::string & ns, std::string & name, std::string & tag) {
+    ns = "library";
+    name = spec;
+    tag = "latest";
+    const size_t slash = spec.find('/');
+    if (slash != std::string::npos) {
+        ns = spec.substr(0, slash);
+        name = spec.substr(slash + 1);
+    }
+    const size_t colon = name.find(':');
+    if (colon != std::string::npos) {
+        tag = name.substr(colon + 1);
+        name = name.substr(0, colon);
+    }
+    return valid_registry_component(ns) && valid_registry_component(name) &&
+           valid_registry_component(tag);
+}
+
+// Registers a pulled/imported model, refreshing GGUF metadata from disk.
+int register_pulled(const std::string & friendly, const std::string & path,
+                    const std::string & source, const std::string & source_id,
+                    const std::string & template_text, const std::string & license,
+                    const std::string & params_json) {
+    std::vector<ModelEntry> models = load_models();
+    if (find_model(models, friendly)) {
+        fprintf(stderr, "\033[31merror: a model named '%s' is already registered (anvil rm %s to replace)\033[0m\n",
+                friendly.c_str(), friendly.c_str());
+        return 1;
+    }
+    const ModelMeta meta = read_model_meta(path);
+    if (meta.desc.empty() && meta.trained_ctx <= 0) {
+        fprintf(stderr, "\033[33mwarning: could not read GGUF metadata from %s (file may be incomplete)\033[0m\n",
+                path.c_str());
+    }
+    ModelEntry e;
+    e.name = friendly;
+    e.path = path;
+    e.source = source;
+    e.source_id = source_id;
+    e.added = now_iso();
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(path, ec);
+    e.size_bytes = ec ? 0 : sz;
+    e.desc = meta.desc;
+    e.trained_ctx = meta.trained_ctx;
+    e.gguf_meta = meta.gguf_meta;
+    e.chat_template = template_text;
+    e.license = license;
+    e.params_json = params_json;
+    // Ollama params blob -> persistent profile defaults (same CLI bounds).
+    try {
+        if (!params_json.empty()) apply_ollama_params(nlohmann::json::parse(params_json), e.profile);
+    } catch (const nlohmann::json::exception &) {}
+    // Clamp a manifest-claimed num_ctx to the model's trained context: a
+    // Modelfile can request 131072 on a 4k-trained model, which would just
+    // waste KV memory (or fail to allocate). Also bounded by the global cap.
+    if (e.trained_ctx > 0) {
+        auto it = e.profile.settings.find("n_ctx");
+        if (it != e.profile.settings.end() && it->second.is_number_integer()) {
+            const int64_t nctx = it->second.get<int64_t>();
+            const int64_t cap  = std::min<int64_t>(e.trained_ctx, MAX_CTX);
+            if (nctx > cap) {
+                fprintf(stderr, "\033[33mwarning: requested n_ctx=%lld exceeds trained context %lld; clamping to %lld\033[0m\n",
+                        static_cast<long long>(nctx), static_cast<long long>(e.trained_ctx),
+                        static_cast<long long>(cap));
+                it->second = cap;
+            }
+        }
+    }
+    models.push_back(std::move(e));
+    if (!save_models(models)) return 1;
+    printf("\033[32mRegistered '%s' (%s) -> %s\033[0m\n", friendly.c_str(),
+           format_size(e.size_bytes).c_str(), path.c_str());
+    if (!e.desc.empty())      printf("  arch       : %s\n", e.desc.c_str());
+    if (e.trained_ctx > 0)    printf("  trained ctx: %lld\n", static_cast<long long>(e.trained_ctx));
+    if (!e.chat_template.empty()) printf("  template   : %zu bytes (from ollama metadata)\n", e.chat_template.size());
+    if (!e.profile.empty()) {
+        printf("  profile    : ");
+        bool first = true;
+        for (const auto & [k, v] : e.profile.settings) {
+            std::string s;
+            if (v.is_string())            s = v.get<std::string>();
+            else if (v.is_number_float()) { char b[32]; std::snprintf(b, sizeof(b), "%.4g", v.get<double>()); s = b; }
+            else if (v.is_boolean())       s = v.get<bool>() ? "true" : "false";
+            else                          s = v.dump();
+            printf("%s%s=%s", first ? "" : " ", k.c_str(), s.c_str());
+            first = false;
+        }
+        printf(" (from ollama params)\n");
+    }
+    printf("  run        : anvil run %s\n", friendly.c_str());
+    return 0;
+}
+
+// Verifies a downloaded blob against its registry digest (sha256:<hex>).
+bool verify_digest(const std::string & path, const std::string & digest) {
+    if (digest.compare(0, 7, "sha256:") != 0) return true;   // unknown scheme: skip
+    const std::string expected = digest.substr(7);
+    const std::string actual = sha256_of(path);
+    if (actual.empty()) {
+        fprintf(stderr, "\033[33mwarning: no sha256 tool available; skipping verification\033[0m\n");
+        return true;
+    }
+    if (actual != expected) {
+        fprintf(stderr, "\033[31mchecksum mismatch for %s (got %s, expected %s)\033[0m\n",
+                path.c_str(), actual.c_str(), expected.c_str());
+        return false;
+    }
+    printf("  verified sha256:%s\n", expected.c_str());
+    return true;
+}
+
+// Pulls one blob from the registry into models_dir. Returns 0 on success.
+// A checksum mismatch discards the corrupt file (final + .part) and retries
+// once from scratch — a resumed .part can be corrupt even when curl reports
+// success, and resuming from the bad bytes would loop forever.
+int pull_blob(const std::string & ns, const std::string & model, const OllamaLayer & layer,
+              const std::string & dest) {
+    const std::string url = std::string(OLLAMA_BASE) + "/" + ns + "/" + model + "/blobs/" + layer.digest;
+    printf("  %-28s %s\n", layer.media_type.c_str(), format_size(layer.size).c_str());
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (http_download(url, dest, layer.size) != 0) return -1;
+        if (verify_digest(dest, layer.digest)) return 0;
+        std::error_code ec;
+        std::filesystem::remove(dest, ec);
+        std::filesystem::remove(dest + ".part", ec);
+        if (attempt == 0) fprintf(stderr, "  checksum mismatch; retrying from scratch...\n");
+    }
+    fprintf(stderr, "\033[31merror: checksum still mismatched after retry; giving up\033[0m\n");
+    return -1;
+}
+
+} // namespace
+
+// anvil pull ollama:[ns/]name[:tag]  |  ollama-local:[ns/]name[:tag]
 int cmd_pull(const std::vector<std::string> & args) {
-    fprintf(stderr, "error: 'pull' is not built yet. Coming soon: anvil pull ollama:<name> / hf:<repo>.\n");
-    (void)args;
-    return 1;
+    if (args.empty()) {
+        fprintf(stderr, "usage: anvil pull ollama:<name>[:tag] | ollama-local:<name>[:tag] | hf:<repo>[:file]\n");
+        return 1;
+    }
+    if (args.size() > 1) {
+        fprintf(stderr, "error: unexpected argument '%s'\n", args[1].c_str());
+        return 1;
+    }
+
+    // Source prefix: ollama (registry) / ollama-local (~/.ollama) / hf (phase 3).
+    std::string source = "ollama";
+    std::string rest = args[0];
+    const size_t colon = rest.find(':');
+    if (colon != std::string::npos) {
+        const std::string prefix = rest.substr(0, colon);
+        if (prefix == "ollama" || prefix == "ollama-local") {
+            source = prefix;
+            rest = rest.substr(colon + 1);
+        }
+    }
+    if (source == "hf") {
+        fprintf(stderr, "error: HuggingFace pull is not built yet (coming in the next update).\n");
+        return 1;
+    }
+
+    std::string ns, name, tag;
+    if (!parse_ollama_spec(rest, ns, name, tag)) {
+        fprintf(stderr, "error: invalid model spec '%s' (expected [ns/]name[:tag])\n", rest.c_str());
+        return 1;
+    }
+    const std::string friendly = slugify(name + "-" + tag);
+    const std::string source_id = ns + "/" + name + ":" + tag;
+
+    OllamaManifest manifest;
+    if (source == "ollama") {
+        const std::string url = std::string(OLLAMA_BASE) + "/" + ns + "/" + name + "/manifests/" + tag;
+        printf("Pulling from Ollama registry: %s\n", source_id.c_str());
+        const std::string body = http_get(url, "-H \"Accept: application/vnd.docker.distribution.manifest.v2+json\"");
+        if (body.empty() || !parse_ollama_manifest(body, manifest)) {
+            fprintf(stderr, "\033[31merror: model '%s' not found in the Ollama registry (or network issue)\033[0m\n",
+                    source_id.c_str());
+            return 1;
+        }
+    } else {  // ollama-local: import an already-pulled ollama install.
+        // Respect OLLAMA_MODELS (ollama's own store override); fall back to
+        // the default ~/.ollama/models location.
+        std::string base;
+        const char * om = std::getenv("OLLAMA_MODELS");
+        if (om && om[0]) {
+            base = om;
+            while (base.size() > 1 && base.back() == '/') base.pop_back();
+        } else {
+            const char * home = std::getenv("HOME");
+#ifdef _WIN32
+            if (!home || !home[0]) home = std::getenv("USERPROFILE");
+#endif
+            if (!home || !home[0]) home = ".";
+            base = std::string(home) + "/.ollama/models";
+        }
+        const std::string mp = base + "/manifests/registry.ollama.ai/" + ns + "/" + name + "/" + tag;
+        printf("Importing from local ollama install: %s\n", source_id.c_str());
+        std::ifstream mf(mp);
+        if (!mf) {
+            fprintf(stderr, "\033[31merror: no local ollama model at %s (did you 'ollama pull %s' first?)\033[0m\n",
+                    mp.c_str(), source_id.c_str());
+            return 1;
+        }
+        const std::string body((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+        if (!parse_ollama_manifest(body, manifest)) {
+            fprintf(stderr, "\033[31merror: unreadable manifest at %s\033[0m\n", mp.c_str());
+            return 1;
+        }
+        // Resolve layer paths to blob files (blobs are named sha256-<hex>).
+        for (auto & layer : manifest.layers) {
+            std::string fname = layer.digest;
+            std::replace(fname.begin(), fname.end(), ':', '-');
+            layer.digest = base + "/blobs/" + fname;   // digest field now holds the path
+        }
+    }
+
+    // Separate layers by media type.
+    const OllamaLayer * model_layer = nullptr;
+    std::vector<const OllamaLayer *> template_layers, params_layers, license_layers;
+    for (const auto & layer : manifest.layers) {
+        if (layer.media_type == "application/vnd.ollama.image.model") {
+            if (model_layer) {
+                fprintf(stderr, "\033[31merror: sharded models (multiple weight layers) are not supported yet\033[0m\n");
+                return 1;
+            }
+            model_layer = &layer;
+        } else if (layer.media_type == "application/vnd.ollama.image.template") template_layers.push_back(&layer);
+        else if (layer.media_type == "application/vnd.ollama.image.params")  params_layers.push_back(&layer);
+        else if (layer.media_type == "application/vnd.ollama.image.license") license_layers.push_back(&layer);
+    }
+    if (!model_layer) {
+        fprintf(stderr, "\033[31merror: manifest has no GGUF model layer\033[0m\n");
+        return 1;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(models_dir(), ec);
+    if (ec) {
+        fprintf(stderr, "\033[31merror: could not create %s\033[0m\n", models_dir().c_str());
+        return 1;
+    }
+    std::string model_path;
+    if (source == "ollama") {
+        model_path = models_dir() + "/" + friendly + ".gguf";
+        if (std::filesystem::exists(model_path)) {
+            fprintf(stderr, "\033[31merror: model file already exists at %s (anvil rm %s --yes to replace)\033[0m\n",
+                    model_path.c_str(), friendly.c_str());
+            return 1;
+        }
+        printf("Downloading %s (%s)...\n", friendly.c_str(), format_size(model_layer->size).c_str());
+        if (pull_blob(ns, name, *model_layer, model_path) != 0) return 1;
+    } else {
+        // Prefer a hardlink into anvil's own store: zero extra disk (same
+        // filesystem) and the model survives an ollama uninstall. Fall back to
+        // referencing the blob directly when the stores span filesystems.
+        const std::string linked = models_dir() + "/" + friendly + ".gguf";
+        std::error_code lk;
+        std::filesystem::remove(linked, lk);   // stale target from an aborted import
+        lk.clear();
+        std::filesystem::create_hard_link(model_layer->digest, linked, lk);
+        if (!lk) {
+            model_path = linked;
+            printf("Linked local blob into anvil store: %s\n", linked.c_str());
+        } else {
+            model_path = model_layer->digest;   // direct blob reference, zero disk cost
+            fprintf(stderr, "\033[33mwarning: could not hardlink blob into anvil store (%s); "
+                            "referencing directly — deleting the ollama store will break this model\033[0m\n",
+                    lk.message().c_str());
+        }
+    }
+
+    // Metadata layers.
+    std::string template_text, license_text, params_json;
+    auto read_layer_text = [&](const OllamaLayer & layer) -> std::string {
+        if (source == "ollama") {
+            const std::string tmp = pull_tmp_path();
+            std::error_code e2;
+            if (http_download(std::string(OLLAMA_BASE) + "/" + ns + "/" + name + "/blobs/" + layer.digest, tmp) != 0)
+                return "";
+            std::ifstream f(tmp, std::ios::binary);
+            std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::filesystem::remove(tmp, e2);
+            return s;
+        }
+        std::ifstream f(layer.digest, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    if (!template_layers.empty()) template_text = read_layer_text(*template_layers[0]);
+    if (!params_layers.empty())   params_json  = read_layer_text(*params_layers[0]);
+    if (!license_layers.empty())  license_text = read_layer_text(*license_layers[0]);
+
+    return register_pulled(friendly, model_path, source == "ollama" ? "ollama" : "ollama-local",
+                           source_id, template_text, license_text, params_json);
 }
 // ──── src/hardware.hpp ────
 

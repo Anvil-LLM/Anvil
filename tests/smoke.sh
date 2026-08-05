@@ -65,6 +65,14 @@ expect_nonzero "profile bad value" "$BIN" profile test-model set temp=abc
 
 expect_nonzero "unknown registry name" "$BIN" run not-a-real-model
 
+echo "pull spec validation (offline)"
+expect_nonzero "pull: no arg" "$BIN" pull
+expect_nonzero "pull: invalid chars" "$BIN" pull 'ollama:evil"name'
+expect_nonzero "pull: empty name" "$BIN" pull 'ollama:'
+expect_nonzero "pull: hf not built" "$BIN" pull hf:test/repo
+expect_nonzero "pull: extra arg" "$BIN" pull ollama:smollm:135m extra
+expect_nonzero "pull: not-found model" "$BIN" pull ollama:this-model-does-not-exist-xyz:latest
+
 rm -rf "$HOME"
 export HOME="$OLD_HOME"
 

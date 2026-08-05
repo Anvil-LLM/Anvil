@@ -84,6 +84,39 @@ anvil run model.gguf
 anvil run model.gguf --ctx 128000 --ngl -1 --type-k turbo4 --type-v turbo3 --mtp
 ```
 
+### Model registry, profiles & pulls
+
+Models get **friendly names** with persistent **per-model profiles** (settings
+remembered across runs). Running a local file auto-registers it:
+
+```bash
+anvil models                          # list registered models
+anvil models import model.gguf --name llama3.2
+anvil run llama3.2                    # friendly name, profile auto-applied
+anvil run llama3.2 --temp 0.9 --save  # ...and persist this override
+anvil profile llama3.2                # show the profile
+anvil profile llama3.2 set n_ctx=131072 type_k=turbo4
+anvil rm llama3.2 [--yes]             # unregister (--yes also deletes the file)
+```
+
+Pull models straight from the **Ollama registry** — Ollama models *are* GGUF, so
+anvil downloads the weights blob and extracts the chat template, license and
+sampling params (which become the profile defaults):
+
+```bash
+anvil pull ollama:llama3.2:3b        # registry pull (namespace defaults to library)
+```
+
+Already use `ollama`? Import without re-downloading — anvil references the
+existing blobs in `~/.ollama/models` directly:
+
+```bash
+anvil pull ollama-local:llama3.2:3b
+```
+
+**Precedence:** CLI flags > model profile > global config. Profiles live in
+`~/.anvil/models.json`; every write is atomic (tmp + rename).
+
 ---
 
 ## Why Anvil?
