@@ -56,21 +56,28 @@ jobs:
           $installer = "$env:TEMP\vulkan-sdk-$version.exe"
           Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" `
             -OutFile $installer -TimeoutSec 600
+          # The Vulkan SDK installer is Qt-based, NOT Inno Setup: '/S' is not a
+          # valid flag (it exits 1). The supported CLI (same as the
+          # jakoch/install-vulkan-sdk action) is:
+          #   --root <dir> --accept-licenses --default-answer --confirm-command install
+          $dest = "C:\VulkanSDK\$version"
+          $p = Start-Process -FilePath $installer `
+            -ArgumentList @('--root', $dest, '--accept-licenses', '--default-answer', '--confirm-command', 'install') `
+            -NoNewWindow -PassThru
           # WaitForExit (a .NET method, unlike Start-Process -TimeoutSec which
           # only exists in PowerShell 7.4+) gives a hard 15-min bound so a
           # wedged installer cannot hang the job.
-          $p = Start-Process -FilePath $installer -ArgumentList '/S' -NoNewWindow -PassThru
           if (-not $p.WaitForExit(900000)) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
             throw 'Vulkan SDK installer timed out after 15 minutes'
           }
           if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer failed with exit code $($p.ExitCode)" }
-          # Installer layout is C:\VulkanSDK\<version>; point VULKAN_SDK at the
-          # versioned dir — ggml's find_package(Vulkan) uses it as a prefix path.
-          $sdkRoot = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue |
-                     Where-Object { $_.Name -eq $version } | Select-Object -First 1
-          if (-not $sdkRoot) { throw "Vulkan SDK $version not found under C:\VulkanSDK after install" }
-          "VULKAN_SDK=$($sdkRoot.FullName)" >> $env:GITHUB_ENV
+          # Point VULKAN_SDK at the versioned install dir — ggml's
+          # find_package(Vulkan) uses it as a prefix path.
+          if (-not (Test-Path "$dest\Bin\glslc.exe")) {
+            throw "Vulkan SDK $version not found at $dest after install"
+          }
+          "VULKAN_SDK=$dest" >> $env:GITHUB_ENV
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - name: Build
