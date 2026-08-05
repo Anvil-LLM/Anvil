@@ -45,15 +45,22 @@ build if it isn't available. The CUDA build needs **only the NVIDIA driver** —
 the CUDA runtime is bundled, so there's no CUDA toolkit to install.
 
 If the driver is missing, anvil points you at the driver helper
-(`docs/anvil-nvidia-install.sh`), which installs it from your distro's package
-manager — never a `.run` file:
+(`docs/anvil-nvidia-install.sh`), which installs NVIDIA's official driver on
+**any distro, any NVIDIA card** — no distro-specific packages needed:
 
 ```bash
 curl -fsSL -O https://raw.githubusercontent.com/anvil-llm/anvil/main/docs/anvil-nvidia-install.sh
 chmod +x anvil-nvidia-install.sh
 ./anvil-nvidia-install.sh --check      # report only, changes nothing
-sudo ./anvil-nvidia-install.sh         # installs the driver via apt/dnf/pacman/zypper
+sudo ./anvil-nvidia-install.sh         # universal install (NVIDIA .run + DKMS)
 ```
+
+It reads your GPU generation and picks the right driver branch automatically:
+Turing and newer (RTX, GTX 16xx) get the latest driver with open kernel
+modules; Pascal/Maxwell (GTX 10xx/9xx) get the 580 series; Kepler (GTX 6xx/7xx)
+gets the 470 series. DKMS keeps the module rebuilt across kernel updates, and
+Secure Boot (MOK) is handled. Distro-package installs remain available via
+`--distro`, and Frogging-Family's nvidia-all via `--nvidia-all` (Arch).
 
 Force the CUDA build on NVIDIA hardware (or any x86_64 Linux):
 
