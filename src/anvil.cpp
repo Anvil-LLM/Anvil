@@ -25,8 +25,12 @@
 #include <IOKit/IOKitLib.h>
 #include <sys/sysctl.h>
 #endif
-#include <unistd.h>
-#include <glob.h>
+#ifdef _WIN32
+#include <io.h>          // _isatty, _fileno (POSIX unistd.h does not exist on MSVC)
+#else
+#include <unistd.h>      // isatty, STDIN_FILENO (POSIX)
+#include <glob.h>        // sysfs GPU probe (Linux only, harmless elsewhere)
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #include <dxgi.h>
@@ -295,6 +299,15 @@ struct GenStats {
         return elapsed_sec > 0.0 ? tokens_generated / elapsed_sec : 0.0;
     }
 };
+
+// Portable TTY check: isatty(STDIN_FILENO) is POSIX; MSVC uses _isatty/_fileno.
+inline bool stdin_is_tty() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(STDIN_FILENO) != 0;
+#endif
+}
 // ──── src/cli.hpp ────
 
 
@@ -1728,7 +1741,7 @@ int cmd_pull_hf(const std::string & spec, const std::vector<std::string> & extra
 
     // The interactive picker needs a terminal; fail before any network work
     // (and before scripting environments hang waiting on stdin).
-    if (file.empty() && !list_only && !isatty(STDIN_FILENO)) {
+    if (file.empty() && !list_only && !stdin_is_tty()) {
         fprintf(stderr, "error: interactive picker needs a terminal; pass the file explicitly:\n"
                         "  anvil pull hf:%s:<file.gguf>\n  anvil pull hf:%s --list\n",
                 repo.c_str(), repo.c_str());
