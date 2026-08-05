@@ -1,0 +1,113 @@
+name: installer-test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Deterministic: fake hardware, no network, no GPU needed ─────────────
+  smoke:
+    name: Smoke (fake hardware)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax checks
+        run: |
+          sh -n docs/anvil-nvidia-install.sh
+          sh -n docs/install.sh
+          bash -n tests/installer-smoke.sh
+      - name: Shellcheck (error severity only)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S error docs/anvil-nvidia-install.sh
+          shellcheck -S error docs/install.sh
+      - name: Run smoke harness (branch selection, modes, flags, install.sh hook)
+        run: bash tests/installer-smoke.sh
+
+  # ─── Live: real NVIDIA endpoints + real .run validity (no GPU needed) ────
+  live:
+    name: Live NVIDIA endpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve all driver branches and verify .run URLs
+        run: |
+          set -e
+          BASE=https://download.nvidia.com/XFree86/Linux-x86_64
+          echo "=== latest (Turing+) ==="
+          LATEST=$(curl -fsSL "$BASE/latest.txt" | awk '{print $1}')
+          test -n "$LATEST"
+          echo "resolved: $LATEST"
+          curl -fsSLI -o /dev/null -w "  .run HTTP %{http_code}\n" \
+            "$BASE/$LATEST/NVIDIA-Linux-x86_64-$LATEST.run"
+          for BR in 580 470; do
+            V=$(curl -fsSL "$BASE/" | grep -oE "$BR\.[0-9]+(\.[0-9]+)?/" \
+              | tr -d '/' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+            test -n "$V"
+            echo "=== $BR branch ==="
+            echo "resolved: $V"
+            curl -fsSLI -o /dev/null -w "  .run HTTP %{http_code}\n" \
+              "$BASE/$V/NVIDIA-Linux-x86_64-$V.run"
+          done
+      - name: Real .run validity (download + --version, non-root)
+        run: |
+          set -e
+          BASE=https://download.nvidia.com/XFree86/Linux-x86_64
+          LATEST=$(curl -fsSL "$BASE/latest.txt" | awk '{print $1}')
+          echo "Downloading $LATEST .run (~200 MB)..."
+          curl -fSL -o /tmp/nv.run "$BASE/$LATEST/NVIDIA-Linux-x86_64-$LATEST.run"
+          SIZE=$(wc -c < /tmp/nv.run)
+          test "$SIZE" -gt 10485760   # >10MB sanity: catches captive-portal pages
+          echo "downloaded: $SIZE bytes"
+          echo "=== sh installer.run --version (non-root) ==="
+          sh /tmp/nv.run --version
+          rm -f /tmp/nv.run
+
+  # ─── Real: the actual apt toolchain command the installer would run ─────
+  toolchain-ubuntu:
+    name: Real toolchain (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the exact debian toolchain step
+        run: |
+          set -e
+          KVER=$(uname -r)
+          echo "kernel: $KVER"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "linux-headers-${KVER}" dkms build-essential
+          test -d "/usr/src/linux-headers-${KVER}" && echo "headers present: /usr/src/linux-headers-${KVER}"
+
+  # ─── Real: fedora os-release detection + dnf command construction ────────
+  toolchain-fedora:
+    name: Fedora detection + dnf plan
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    timeout-minutes: 10
+    steps:
+      - name: Install git for checkout
+        run: dnf -y install git
+      - uses: actions/checkout@v4
+      - name: --check with real fedora os-release (fake GPU, no GPU in CI)
+        run: |
+          set -e
+          printf '#!/bin/sh\nif [ "$1" = "-nn" ]; then echo "VGA compatible controller [0300]: NVIDIA Corporation AD102 [GeForce RTX 4090] [10de:2684]"; else echo "VGA compatible controller: NVIDIA Corporation AD102 [GeForce RTX 4090]"; fi\n' > /tmp/lspci
+          chmod +x /tmp/lspci
+          PATH=/tmp:$PATH sh docs/anvil-nvidia-install.sh --check | tee /tmp/report.txt
+          grep -E 'fedora' /tmp/report.txt
+          grep -E 'RTX 4090' /tmp/report.txt
+          grep -E 'modern' /tmp/report.txt
+      - name: --dry-run resolves live version + prints dnf commands
+        run: |
+          set -e
+          PATH=/tmp:$PATH sh docs/anvil-nvidia-install.sh --dry-run | tee /tmp/plan.txt
+          grep -E 'kernel-devel' /tmp/plan.txt
+          grep -E 'dnf install' /tmp/plan.txt
