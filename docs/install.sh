@@ -9,7 +9,7 @@ err() { printf "error: %s\n" "$1" >&2; }
 die() { err "$1"; exit 1; }
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 is_tty() { [ -t 0 ] && [ -t 1 ]; }
-cleanup() { rm -rf "$TMP_BASE"; exit 1; }
+cleanup() { rm -rf "${TMP_BASE:-}"; exit 1; }
 ensure_target_writable() {
 _dir="$1"
 if ! mkdir -p "$_dir" 2>/dev/null && has_cmd sudo; then sudo -n mkdir -p "$_dir" 2>/dev/null || true; fi
@@ -45,12 +45,29 @@ if [ -z "$TAG" ]; then TAG=$(http_get_stdout "${API_URL}/latest" | sed -n 's/.*"
 if [ -z "$TAG" ]; then die "could not determine latest release (network issue or GitHub API rate limit)."; fi
 log "Latest release: $TAG"
 }
+verify_checksum() {
+_file=$1
+[ -n "$ANVIL_SKIP_CHECKSUM" ] && { log "Checksum verification skipped (ANVIL_SKIP_CHECKSUM set)."; return 0; }
+log "Verifying checksum..."
+# The tag endpoint lists every asset with its sha256 digest. Collapse the JSON
+# to one line, then pull the digest belonging to our asset name.
+_meta=$(http_get_stdout "${API_URL}/tags/${TAG}" 2>/dev/null | tr -d '\n')
+_digest=$(printf '%s' "$_meta" | sed -n "s/.*\"name\"[[:space:]]*:[[:space:]]*\"${ASSET}\"[^}]*\"digest\"[[:space:]]*:[[:space:]]*\"sha256:\([^\"]*\)\".*/\1/p" | head -1)
+if [ -z "$_digest" ]; then log "warning: no checksum available for ${ASSET}; skipping verification"; return 0; fi
+if has_cmd sha256sum; then _actual=$(sha256sum "$_file" | awk '{print $1}')
+elif has_cmd shasum; then _actual=$(shasum -a 256 "$_file" | awk '{print $1}')
+else log "warning: no sha256 tool available; skipping verification"; return 0; fi
+if [ "$_actual" != "$_digest" ]; then err "checksum mismatch for ${ASSET} (got $_actual, expected $_digest)"; return 1; fi
+log "Checksum OK (sha256:${_digest})"
+}
+
 install_binary() {
 resolve_tag
 URL="${REPO_URL}/releases/download/${TAG}/${ASSET}"
 TMP_BIN="${TMP_BASE}/anvil"
 log "Downloading ${ASSET}..."
 if ! http_get_file "$URL" "$TMP_BIN"; then err "prebuilt binary not available for ${ASSET} at ${TAG}"; return 1; fi
+if ! verify_checksum "$TMP_BIN"; then return 1; fi
 if ! "$TMP_BIN" --version >/dev/null 2>&1; then err "downloaded binary does not run on this system (missing libraries?)"; return 1; fi
 ${PRIV}mv "$TMP_BIN" "$TARGET/anvil"
 ${PRIV}chmod +x "$TARGET/anvil"

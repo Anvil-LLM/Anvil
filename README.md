@@ -15,7 +15,7 @@ Anvil is a terminal-first local LLM tool that runs natively. One file. One binar
 | Proprietary API | Drop-in OpenAI-compatible API, in-process (roadmap) |
 | Always-on daemon | Zero idle overhead; the binary runs when you tell it to |
 | Slow, unoptimized defaults | Hardware probe + auto-optimization on first run |
-| Hard to configure | `anvil run llama3` — it just works at max speed |
+| Hard to configure | `anvil run model.gguf` — it just works at max speed |
 | Resource hog | TurboQuant + speculative enabled, where it matters |
 
 ---
@@ -39,22 +39,16 @@ cmake --build build -j
 
 ## Usage
 
-### Run a model (TUI chat)
+### Run a model (chat REPL)
 
 ```bash
-anvil run llama3.1
-```
-
-### Run a model (raw REPL)
-
-```bash
-anvil run llama3.1 --no-tui
+anvil run model.gguf
 ```
 
 ### Full control
 
 ```bash
-anvil run mymodel.gguf --ctx 128000 --ngl -1 --type-k turbo4 --type-v turbo3 --mtp
+anvil run model.gguf --ctx 128000 --ngl -1 --type-k turbo4 --type-v turbo3 --mtp
 ```
 
 ---
@@ -62,7 +56,7 @@ anvil run mymodel.gguf --ctx 128000 --ngl -1 --type-k turbo4 --type-v turbo3 --m
 ## Why Anvil?
 
 - **In-process by default.** Inference runs natively via C++ compiled binary. No HTTP roundtrip, no JSON per token, no subprocess overhead.
-- **Zero jank.** 60 fps TUI. <2s startup. Background threads sleep when idle.
+- **Zero jank.** <2s startup. No background threads when idle.
 - **Everything is opt-in.** The core engine is the only thing that ships by default. Extras — API server, cloud proxy, finetuning — will be enabled and loaded only when you choose.
 - **One binary.** Download `anvil` or run the curl installer. It just works. No extra files, no tracking, no telemetry.
 - **Hardware-adaptive.** Auto-detects your CPU, GPU, RAM, and picks the fastest backend and settings. Zero config.
@@ -105,10 +99,10 @@ Not yet implemented (roadmap):
 |---|---|
 | Core in-process inference | ✅ |
 | TurboQuant | ✅ |
-| Metal / CUDA / Vulkan / CPU backends | ✅ |
+| Metal (macOS) / CUDA & Vulkan (opt-in builds) / CPU | ✅ |
 | Session export | ✅ |
 | Speculative decoding (MTP/NextN) | 🛠️ |
-| TUI chat (`anvil run`) | ✅ |
+| Chat REPL (`anvil run`) | ✅ |
 | Monitoring dashboard | 🛠️ |
 | OpenAI API server (`anvil serve`) | 🛠️ |
 | Hardware auto-probe | 🛠️ |

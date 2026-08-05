@@ -713,7 +713,8 @@ tokens/sec: 127.4 · prompt tokens: 842 · total tokens: 4 891</pre>
         <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin:22px 0 10px">SYNOPSIS</h3>
         <pre style="background:#0d0903;border:1px solid var(--line);border-radius:6px;padding:14px 18px;font-size:12.5px;color:var(--green);overflow-x:auto">anvil run model.gguf [--ctx N] [--ngl N]
     [--type-k T] [--type-v T] [--mtp]
-    [--triattn] [--grammar f.gbnf] [-p "..."]</pre>
+    [--top-k 40] [--top-p 0.95] [--repeat-penalty 1.1]
+    [--grammar f.gbnf] [-p "..."]</pre>
         <h3 style="color:var(--amber);font-size:13px;letter-spacing:.18em;margin:22px 0 10px">DESCRIPTION</h3>
         <p style="color:var(--muted);font-size:13.5px">anvil loads any GGUF model, auto-detects your hardware, and drops you into a streaming chat REPL. First run launches a TUI wizard; after that it just forges.</p>
       </div>
@@ -797,7 +798,7 @@ tokens/sec: 127.4 · prompt tokens: 842 · total tokens: 4 891</pre>
   <span class="k">"temp"</span>:       <span class="n">0.8</span>,
   <span class="k">"flash_attn"</span>: <span class="b">true</span>,
   <span class="k">"mtp"</span>:        <span class="b">false</span>,          <span class="cm">// spec decode</span>
-  <span class="k">"triattn"</span>:    <span class="b">false</span>,          <span class="cm">// KV eviction</span>
+  <span class="k">"top_k"</span>:  <span class="n">40</span>,                <span class="cm">// sampling</span>
   <span class="k">"type_k"</span>:     <span class="s">"turbo4"</span>,       <span class="cm">// K cache</span>
   <span class="k">"type_v"</span>:     <span class="s">"turbo3"</span>,       <span class="cm">// V cache</span>
   <span class="k">"model"</span>:      <span class="s">"qwen3.6-27b.gguf"</span>

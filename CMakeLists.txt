@@ -33,9 +33,19 @@ FetchContent_Declare(ftxui GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXU
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
-add_executable(anvil src/anvil.cpp)
-target_include_directories(anvil PRIVATE ${LLAMA_DIR}/include ${LLAMA_DIR}/ggml/include)
+add_executable(anvil
+    src/main.cpp
+    src/cli.cpp
+    src/config.cpp
+    src/hardware.cpp
+    src/setup.cpp
+    src/chat.cpp
+)
+target_include_directories(anvil PRIVATE src ${LLAMA_DIR}/include ${LLAMA_DIR}/ggml/include)
 target_link_libraries(anvil PRIVATE llama ggml ftxui::ftxui)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(anvil PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-unused-parameter)
+endif()
 if(APPLE)
 target_link_libraries(anvil PRIVATE "-framework Metal" "-framework Foundation" "-framework Accelerate" "-framework QuartzCore" "-framework CoreFoundation" "-framework IOKit" "-lc++" "-lobjc")
 elseif(UNIX)
