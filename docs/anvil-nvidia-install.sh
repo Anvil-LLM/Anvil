@@ -197,7 +197,7 @@ detect_gpu_gen() {
     GPU_GEN="unknown"
     [ "$NVIDIA_PRESENT" = 1 ] || return 0
     case "$GPU_LINE" in
-        *RTX*|*"GTX 16"*|*Turing*|*Ampere*|*Ada*|*Hopper*|*Blackwell*|*"RTX A"*|*"RTX PRO"*|*"Quadro RTX"*|*"Tesla A"*|*"Tesla H"*|*"Tesla L"*|*"Tesla B"*|*A100*|*H100*|*H200*|*B100*|*B200*|*L4*|*L40*|*L20*|*A10*|*A30*|*A40*|*A6000*)
+        *RTX*|*"GTX 16"*|*Turing*|*Ampere*|*Ada*|*Hopper*|*Blackwell*|*"RTX A"*|*"RTX PRO"*|*"Quadro RTX"*|*"Tesla A"*|*"Tesla T"*|*"Tesla H"*|*"Tesla L"*|*"Tesla B"*|*A100*|*H100*|*H200*|*B100*|*B200*|*L4*|*L40*|*L20*|*A10*|*A30*|*A40*|*A6000*|*TU10*|*TU11*|*T1000*|*T2000*)
             GPU_GEN="modern" ;;
         *"GTX 10"*|*"GTX 9"*|*"GT 10"*|*Pascal*|*Maxwell*|*"Quadro P"*|*"Quadro M"*|*"Tesla P"*|*"Tesla V"*|*P100*|*V100*|*P40*|*P4*)
             GPU_GEN="pascal" ;;
