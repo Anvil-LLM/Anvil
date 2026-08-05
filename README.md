@@ -107,12 +107,28 @@ sampling params (which become the profile defaults):
 anvil pull ollama:llama3.2:3b        # registry pull (namespace defaults to library)
 ```
 
-Already use `ollama`? Import without re-downloading — anvil references the
-existing blobs in `~/.ollama/models` directly:
+Already use `ollama`? Import without re-downloading — anvil hardlinks the
+blobs into its own store (falling back to direct references across
+filesystems), and respects the `OLLAMA_MODELS` env var:
 
 ```bash
 anvil pull ollama-local:llama3.2:3b
 ```
+
+Pull GGUF quants straight from **HuggingFace**. With no file given, anvil
+lists the repo's `.gguf` files (smallest first) and asks which quant to take;
+pass the file explicitly to skip the picker, or use `--list` to just browse:
+
+```bash
+anvil pull hf:bartowski/Llama-3.2-1B-Instruct-GGUF
+anvil pull hf:bartowski/Llama-3.2-1B-Instruct-GGUF:Llama-3.2-1B-Instruct-Q4_K_M.gguf
+anvil pull hf:bartowski/Llama-3.2-1B-Instruct-GGUF --list
+```
+
+Every download is verified against its registry/LFS sha256 and resumable
+(`.part` files); a corrupt or stale partial is detected and restarted
+automatically. Safetensors-only repos need the HF converter:
+`backends/llama-turbo/convert_hf_to_gguf.py`.
 
 **Precedence:** CLI flags > model profile > global config. Profiles live in
 `~/.anvil/models.json`; every write is atomic (tmp + rename).

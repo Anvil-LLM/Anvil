@@ -1563,17 +1563,16 @@ bool verify_digest(const std::string & path, const std::string & digest) {
     return true;
 }
 
-// Pulls one blob from the registry into models_dir. Returns 0 on success.
-// A checksum mismatch discards the corrupt file (final + .part) and retries
-// once from scratch — a resumed .part can be corrupt even when curl reports
-// success, and resuming from the bad bytes would loop forever.
-int pull_blob(const std::string & ns, const std::string & model, const OllamaLayer & layer,
-              const std::string & dest) {
-    const std::string url = std::string(OLLAMA_BASE) + "/" + ns + "/" + model + "/blobs/" + layer.digest;
-    printf("  %-28s %s\n", layer.media_type.c_str(), format_size(layer.size).c_str());
+// Downloads + sha256-verifies a blob. A checksum mismatch discards the corrupt
+// file (final + .part) and retries once from scratch — a resumed .part can be
+// corrupt even when curl reports success, and resuming from the bad bytes
+// would loop forever. An empty digest skips verification. Returns 0 on
+// success; shared by the Ollama and HuggingFace pull paths.
+int download_verified(const std::string & url, const std::string & dest,
+                      uint64_t expected_size, const std::string & digest) {
     for (int attempt = 0; attempt < 2; attempt++) {
-        if (http_download(url, dest, layer.size) != 0) return -1;
-        if (verify_digest(dest, layer.digest)) return 0;
+        if (http_download(url, dest, expected_size) != 0) return -1;
+        if (verify_digest(dest, digest)) return 0;
         std::error_code ec;
         std::filesystem::remove(dest, ec);
         std::filesystem::remove(dest + ".part", ec);
@@ -1583,7 +1582,244 @@ int pull_blob(const std::string & ns, const std::string & model, const OllamaLay
     return -1;
 }
 
+// Pulls one blob from the registry into models_dir. Returns 0 on success.
+int pull_blob(const std::string & ns, const std::string & model, const OllamaLayer & layer,
+              const std::string & dest) {
+    const std::string url = std::string(OLLAMA_BASE) + "/" + ns + "/" + model + "/blobs/" + layer.digest;
+    printf("  %-28s %s\n", layer.media_type.c_str(), format_size(layer.size).c_str());
+    return download_verified(url, dest, layer.size, layer.digest);
+}
+
+// ─── HuggingFace pulls ──────────────────────────────────────────────────────
+
+struct HfFile {
+    std::string path;
+    uint64_t    size = 0;
+    std::string oid;   // LFS sha256 hex, when the API exposes it
+};
+
+// hf:<repo>[:<file>] — repo is owner/name (must contain '/'), the optional
+// file is everything after the second ':'. Both are validated against strict
+// allowlists before being embedded in shell commands (injection-safe).
+bool parse_hf_spec(const std::string & spec, std::string & repo, std::string & file) {
+    repo = spec;
+    file.clear();
+    const size_t colon = spec.find(':');
+    if (colon != std::string::npos) {
+        repo = spec.substr(0, colon);
+        file = spec.substr(colon + 1);
+    }
+    const size_t slash = repo.find('/');
+    if (repo.empty() || slash == std::string::npos || slash == 0 || slash + 1 >= repo.size()) return false;
+    for (const char ch : repo) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(c) || c == '/' || c == '.' || c == '-' || c == '_')) return false;
+    }
+    // Reject dot-path segments in the repo too (consistent with the file
+    // check): a repo like `../evil` must never reach a URL or shell command.
+    if (repo.find("/.") != std::string::npos || repo.find("./") != std::string::npos ||
+        repo.find("..") != std::string::npos) return false;
+    if (file.empty()) return true;
+    if (file.size() > 256 || file.find('/') != std::string::npos ||
+        file.find("..") != std::string::npos) return false;
+    for (const char ch : file) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(c) || c == '.' || c == '-' || c == '_')) return false;
+    }
+    return true;
+}
+
+// Resolves the repo's default-branch commit sha via the models API. Some
+// repos default to `master` instead of `main`, so pinning `main` would break
+// them; the sha works for every repo. Returns false on 404/gated/network.
+bool resolve_hf_sha(const std::string & repo, std::string & sha) {
+    const std::string url = "https://huggingface.co/api/models/" + repo;
+    const std::string body = http_get(url);
+    if (body.empty()) return false;
+    try {
+        const nlohmann::json j = nlohmann::json::parse(body);
+        if (j.contains("sha") && j["sha"].is_string()) {
+            sha = j["sha"].get<std::string>();
+            return !sha.empty();
+        }
+    } catch (const nlohmann::json::exception &) {}
+    return false;
+}
+
+// Lists top-level .gguf files of a HF repo at a pinned commit (tree API,
+// recursive), with LFS sizes and sha256 oids. Returns false only on a hard
+// failure (404/network); an empty `out` means the repo has no .gguf files.
+bool list_hf_files(const std::string & repo, const std::string & sha,
+                   std::vector<HfFile> & out) {
+    const std::string url = "https://huggingface.co/api/models/" + repo + "/tree/" + sha + "?recursive=true";
+    const std::string body = http_get(url);
+    if (body.empty()) return false;
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(body);
+    } catch (const nlohmann::json::exception &) {
+        return false;
+    }
+    if (!j.is_array()) return false;
+    for (const auto & f : j) {
+        // Only real files: the tree API also emits directory entries, and a
+        // directory literally named `x.gguf` must not be treated as a model.
+        if (!f.is_object() || !f.contains("type") || !f["type"].is_string()) continue;
+        std::string type;
+        try { type = f["type"].get<std::string>(); } catch (const nlohmann::json::exception &) { continue; }
+        if (type != "file") continue;
+        if (!f.contains("path") || !f["path"].is_string()) continue;
+        std::string p;
+        try { p = f["path"].get<std::string>(); } catch (const nlohmann::json::exception &) { continue; }
+        if (p.size() < 5 || p.compare(p.size() - 5, 5, ".gguf") != 0) continue;
+        if (p.find('/') != std::string::npos) continue;   // top-level only
+        HfFile hf;
+        hf.path = p;
+        if (f.contains("size") && f["size"].is_number()) {
+            try { hf.size = f["size"].get<uint64_t>(); } catch (const nlohmann::json::exception &) {}
+        }
+        if (f.contains("lfs") && f["lfs"].is_object() && f["lfs"].contains("oid") &&
+            f["lfs"]["oid"].is_string()) {
+            try { hf.oid = f["lfs"]["oid"].get<std::string>(); } catch (const nlohmann::json::exception &) {}
+        }
+        out.push_back(std::move(hf));
+    }
+    // Smallest quant first — the usual picker ordering.
+    std::sort(out.begin(), out.end(),
+              [](const HfFile & a, const HfFile & b) { return a.size < b.size; });
+    return true;
+}
+
+// Numbered interactive quant picker; returns the chosen index or -1.
+int pick_hf_file(const std::vector<HfFile> & files) {
+    printf("%zu .gguf file(s):\n", files.size());
+    for (size_t i = 0; i < files.size(); i++) {
+        printf("  [%2zu] %-44s %s\n", i + 1, files[i].path.c_str(),
+               format_size(files[i].size).c_str());
+    }
+    printf("Select a quant [1-%zu]: ", files.size());
+    std::fflush(stdout);
+    std::string line;
+    if (!std::getline(std::cin, line)) return -1;
+    int idx = 0;
+    if (!parse_int(line, idx) || idx < 1 || idx > static_cast<int>(files.size())) return -1;
+    return idx - 1;
+}
+
 } // namespace
+
+// anvil pull hf:<owner>/<repo>[:<file.gguf>]  [--list]
+int cmd_pull_hf(const std::string & spec, const std::vector<std::string> & extra) {
+    bool list_only = false;
+    for (const auto & a : extra) {
+        if (a == "--list") list_only = true;
+        else {
+            fprintf(stderr, "error: unknown pull option '%s'\n", a.c_str());
+            return 1;
+        }
+    }
+
+    std::string repo, file;
+    if (!parse_hf_spec(spec, repo, file)) {
+        fprintf(stderr, "error: invalid HF spec '%s' (expected hf:<owner>/<repo>[:<file.gguf>])\n",
+                spec.c_str());
+        return 1;
+    }
+
+    // The interactive picker needs a terminal; fail before any network work
+    // (and before scripting environments hang waiting on stdin).
+    if (file.empty() && !list_only && !isatty(STDIN_FILENO)) {
+        fprintf(stderr, "error: interactive picker needs a terminal; pass the file explicitly:\n"
+                        "  anvil pull hf:%s:<file.gguf>\n  anvil pull hf:%s --list\n",
+                repo.c_str(), repo.c_str());
+        return 1;
+    }
+
+    // Resolve the default-branch commit once; it pins both the listing and
+    // the download URL, so non-`main` default branches work too.
+    std::string sha;
+    if (!resolve_hf_sha(repo, sha)) {
+        fprintf(stderr, "\033[31merror: could not access '%s' (repo not found, gated, or network issue)\033[0m\n",
+                repo.c_str());
+        return 1;
+    }
+
+    std::vector<HfFile> files;
+    if (!list_hf_files(repo, sha, files)) {
+        fprintf(stderr, "\033[31merror: could not list '%s' (repo not found, gated, or network issue)\033[0m\n",
+                repo.c_str());
+        return 1;
+    }
+
+    if (!file.empty() && list_only) {
+        fprintf(stderr, "error: --list cannot be combined with an explicit file\n");
+        return 1;
+    }
+    if (list_only) {
+        if (files.empty()) {
+            printf("No .gguf files in %s.\n", repo.c_str());
+            return 0;
+        }
+        printf("%s (%zu .gguf):\n", repo.c_str(), files.size());
+        for (const auto & f : files) {
+            std::string suffix = f.oid.empty() ? "" : ("  sha256: " + f.oid);
+            printf("  %-44s %s%s\n", f.path.c_str(), format_size(f.size).c_str(), suffix.c_str());
+        }
+        return 0;
+    }
+
+    if (files.empty()) {
+        fprintf(stderr, "\033[31merror: no .gguf files in %s (safetensors-only repos need the HF converter: "
+                        "backends/llama-turbo/convert_hf_to_gguf.py)\033[0m\n", repo.c_str());
+        return 1;
+    }
+
+    const HfFile * chosen = nullptr;
+    if (file.empty()) {
+        const int idx = pick_hf_file(files);
+        if (idx < 0) {
+            fprintf(stderr, "error: invalid selection\n");
+            return 1;
+        }
+        chosen = &files[static_cast<size_t>(idx)];
+    } else {
+        for (const auto & f : files) {
+            if (f.path == file) { chosen = &f; break; }
+        }
+        if (!chosen) {
+            fprintf(stderr, "\033[31merror: '%s' is not a .gguf file in %s (run 'anvil pull hf:%s --list')\033[0m\n",
+                    file.c_str(), repo.c_str(), repo.c_str());
+            return 1;
+        }
+    }
+
+    // Friendly name from the quant filename: Llama-3.2-1B-Q4_K_M.gguf -> llama-3.2-1b-q4-k-m.
+    const std::string friendly = slugify(std::filesystem::path(chosen->path).stem().string());
+    const std::string source_id = repo + ":" + chosen->path;
+
+    std::error_code ec;
+    std::filesystem::create_directories(models_dir(), ec);
+    if (ec) {
+        fprintf(stderr, "\033[31merror: could not create %s\033[0m\n", models_dir().c_str());
+        return 1;
+    }
+    const std::string model_path = models_dir() + "/" + friendly + ".gguf";
+    if (std::filesystem::exists(model_path)) {
+        fprintf(stderr, "\033[31merror: model file already exists at %s (anvil rm %s --yes to replace)\033[0m\n",
+                model_path.c_str(), friendly.c_str());
+        return 1;
+    }
+
+    const std::string url = "https://huggingface.co/" + repo + "/resolve/" + sha + "/" + chosen->path;
+    printf("Downloading %s (%s)...\n", chosen->path.c_str(), format_size(chosen->size).c_str());
+    if (chosen->oid.empty()) {
+        fprintf(stderr, "\033[33mwarning: no sha256 available from the HF API; download will not be verified\033[0m\n");
+    }
+    const std::string digest = chosen->oid.empty() ? "" : "sha256:" + chosen->oid;
+    if (download_verified(url, model_path, chosen->size, digest) != 0) return 1;
+
+    return register_pulled(friendly, model_path, "hf", source_id, "", "", "");
+}
 
 // anvil pull ollama:[ns/]name[:tag]  |  ollama-local:[ns/]name[:tag]
 int cmd_pull(const std::vector<std::string> & args) {
@@ -1591,24 +1827,24 @@ int cmd_pull(const std::vector<std::string> & args) {
         fprintf(stderr, "usage: anvil pull ollama:<name>[:tag] | ollama-local:<name>[:tag] | hf:<repo>[:file]\n");
         return 1;
     }
-    if (args.size() > 1) {
-        fprintf(stderr, "error: unexpected argument '%s'\n", args[1].c_str());
-        return 1;
-    }
 
-    // Source prefix: ollama (registry) / ollama-local (~/.ollama) / hf (phase 3).
+    // Source prefix: ollama (registry) / ollama-local (~/.ollama) / hf.
     std::string source = "ollama";
     std::string rest = args[0];
     const size_t colon = rest.find(':');
     if (colon != std::string::npos) {
         const std::string prefix = rest.substr(0, colon);
-        if (prefix == "ollama" || prefix == "ollama-local") {
+        if (prefix == "ollama" || prefix == "ollama-local" || prefix == "hf") {
             source = prefix;
             rest = rest.substr(colon + 1);
         }
     }
     if (source == "hf") {
-        fprintf(stderr, "error: HuggingFace pull is not built yet (coming in the next update).\n");
+        return cmd_pull_hf(rest, std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+    // Ollama sources take exactly one argument (no flags yet).
+    if (args.size() > 1) {
+        fprintf(stderr, "error: unexpected argument '%s'\n", args[1].c_str());
         return 1;
     }
 

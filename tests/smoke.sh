@@ -69,7 +69,11 @@ echo "pull spec validation (offline)"
 expect_nonzero "pull: no arg" "$BIN" pull
 expect_nonzero "pull: invalid chars" "$BIN" pull 'ollama:evil"name'
 expect_nonzero "pull: empty name" "$BIN" pull 'ollama:'
-expect_nonzero "pull: hf not built" "$BIN" pull hf:test/repo
+expect_nonzero "pull: hf no slash" "$BIN" pull hf:bareword
+expect_nonzero "pull: hf file with slash" "$BIN" pull hf:owner/repo:dir/file.gguf
+expect_nonzero "pull: hf injection chars" "$BIN" pull 'hf:evil"$(rm -rf /)"repo'
+expect_nonzero "pull: hf unknown flag" "$BIN" pull hf:test/repo --bogus
+expect_nonzero "pull: hf non-tty picker" "$BIN" pull hf:test/repo </dev/null
 expect_nonzero "pull: extra arg" "$BIN" pull ollama:smollm:135m extra
 expect_nonzero "pull: not-found model" "$BIN" pull ollama:this-model-does-not-exist-xyz:latest
 
